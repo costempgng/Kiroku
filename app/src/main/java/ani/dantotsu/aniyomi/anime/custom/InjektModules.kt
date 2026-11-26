@@ -9,6 +9,8 @@ import androidx.media3.database.StandaloneDatabaseProvider
 import ani.dantotsu.addons.download.DownloadAddonManager
 import ani.dantotsu.addons.torrent.TorrentAddonManager
 import ani.dantotsu.download.DownloadsManager
+import ani.dantotsu.extension.ExtensionRuntime
+import ani.dantotsu.extension.bridge.BridgeExtensionRuntime
 import ani.dantotsu.media.manga.MangaCache
 import ani.dantotsu.parsers.novel.NovelExtensionManager
 import eu.kanade.domain.base.BasePreferences
@@ -40,6 +42,10 @@ class AppModule(val app: Application) : InjektModule {
 
         addSingletonFactory { NetworkHelper(app) }
         addSingletonFactory { NetworkHelper(app).client }
+
+        // One runtime per process: every extension feature shares this instance, which is what
+        // keeps the bridge from being initialised twice.
+        addSingletonFactory<ExtensionRuntime> { BridgeExtensionRuntime(app) }
 
         addSingletonFactory { AnimeExtensionManager(app) }
         addSingletonFactory { MangaExtensionManager(app) }

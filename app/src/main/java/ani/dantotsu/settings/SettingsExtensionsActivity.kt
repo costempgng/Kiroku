@@ -21,6 +21,7 @@ import ani.dantotsu.navBarHeight
 import ani.dantotsu.parsers.ParserTestActivity
 import ani.dantotsu.restartApp
 import ani.dantotsu.settings.saving.PrefManager
+import ani.dantotsu.snackString
 import ani.dantotsu.settings.saving.PrefName
 import ani.dantotsu.statusBarHeight
 import ani.dantotsu.themes.ThemeManager
@@ -83,52 +84,35 @@ class SettingsExtensionsActivity : AppCompatActivity() {
                 arrayListOf(
                     Settings(
                         type = 1,
-                        name = getString(R.string.anime_add_repository),
-                        desc = getString(R.string.anime_add_repository_desc),
-                        icon = R.drawable.ic_github,
+                        name = "Extension repositories",
+                        desc = "Manage the repositories the extension runtime installs extensions from",
+                        icon = R.drawable.ic_round_source_24,
+                        isActivity = true,
                         onClick = {
-                            val animeRepos =
-                                PrefManager.getVal<Set<String>>(PrefName.AnimeExtensionRepos)
-                            AddRepositoryBottomSheet.newInstance(
-                                MediaType.ANIME,
-                                animeRepos.toList(),
-                                onRepositoryAdded = { input, mediaType ->
-                                    AddRepositoryBottomSheet.addRepo(input, mediaType)
-                                    setExtensionOutput(it.attachView, mediaType)
-                                },
-                                onRepositoryRemoved = { item, mediaType ->
-                                    AddRepositoryBottomSheet.removeRepo(item, mediaType)
-                                    setExtensionOutput(it.attachView, mediaType)
-                                }
-                            ).show(supportFragmentManager, "add_repo")
-                        },
-                        attach = {
-                            setExtensionOutput(it.attachView, MediaType.ANIME)
+                            ContextCompat.startActivity(
+                                context,
+                                Intent(context, ExtensionsActivity::class.java).putExtra(
+                                    ExtensionsActivity.EXTRA_OPEN_REPOSITORIES,
+                                    true
+                                ),
+                                null
+                            )
                         }
                     ),
                     Settings(
                         type = 1,
-                        name = getString(R.string.manga_add_repository),
-                        desc = getString(R.string.manga_add_repository_desc),
-                        icon = R.drawable.ic_github,
+                        name = "Extension runtime",
+                        desc = "Status, client access and logs of the Kiroku Extension Runtime",
+                        icon = R.drawable.ic_extension,
+                        isActivity = true,
                         onClick = {
-                            val mangaRepos =
-                                PrefManager.getVal<Set<String>>(PrefName.MangaExtensionRepos)
-                            AddRepositoryBottomSheet.newInstance(
-                                MediaType.MANGA,
-                                mangaRepos.toList(),
-                                onRepositoryAdded = { input, mediaType ->
-                                    AddRepositoryBottomSheet.addRepo(input, mediaType)
-                                    setExtensionOutput(it.attachView, mediaType)
-                                },
-                                onRepositoryRemoved = { item, mediaType ->
-                                    AddRepositoryBottomSheet.removeRepo(item, mediaType)
-                                    setExtensionOutput(it.attachView, mediaType)
-                                }
-                            ).show(supportFragmentManager, "add_repo")
-                        },
-                        attach = {
-                            setExtensionOutput(it.attachView, MediaType.MANGA)
+                            val runtimePackage = "io.kiroku.runtime.host"
+                            val launch = packageManager.getLaunchIntentForPackage(runtimePackage)
+                            if (launch != null) {
+                                ContextCompat.startActivity(context, launch, null)
+                            } else {
+                                snackString("The extension runtime is not installed")
+                            }
                         }
                     ),
                     Settings(
@@ -230,16 +214,6 @@ class SettingsExtensionsActivity : AppCompatActivity() {
                             }
                         }
 
-                    ),
-                    Settings(
-                        type = 2,
-                        name = getString(R.string.skip_loading_extension_icons),
-                        desc = getString(R.string.skip_loading_extension_icons_desc),
-                        icon = R.drawable.ic_round_no_icon_24,
-                        isChecked = PrefManager.getVal(PrefName.SkipExtensionIcons),
-                        switch = { isChecked, _ ->
-                            PrefManager.setVal(PrefName.SkipExtensionIcons, isChecked)
-                        }
                     ),
                     Settings(
                         type = 2,

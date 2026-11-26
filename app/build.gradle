@@ -203,6 +203,11 @@ dependencies {
 //  TensorFlow Lite (anime person detector for image-based search)
     implementation 'org.tensorflow:tensorflow-lite:2.16.1'
 
+//  Kiroku Extension Runtime Bridge (extension runtime SDK + its IPC contract)
+    implementation files('libs/bridge-sdk-1.1.1.aar')
+    implementation files('libs/bridge-ipc-1.1.1.aar')
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+
 //  Aniyomi
     implementation 'io.reactivex:rxjava:1.3.8'
     implementation 'io.reactivex:rxandroid:1.2.1'

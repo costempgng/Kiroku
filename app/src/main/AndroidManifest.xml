@@ -53,6 +53,8 @@
     <!-- ExoPlayer: Bluetooth Headsets -->
 
     <queries>
+        <!-- Extension runtime: required on Android 11+ so the bridge can find and bind it -->
+        <package android:name="io.kiroku.runtime.host" />
         <package android:name="idm.internet.download.manager.plus" />
         <package android:name="idm.internet.download.manager" />
         <package android:name="idm.internet.download.manager.adm.lite" />

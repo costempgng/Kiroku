@@ -7,11 +7,6 @@ import ani.dantotsu.parsers.novel.NovelExtension
 import ani.dantotsu.settings.saving.PrefManager
 import ani.dantotsu.settings.saving.PrefName
 import ani.dantotsu.util.Logger
-import eu.kanade.tachiyomi.extension.anime.model.AnimeExtension
-import eu.kanade.tachiyomi.extension.anime.model.AvailableAnimeSources
-import eu.kanade.tachiyomi.extension.manga.model.AvailableMangaSources
-import eu.kanade.tachiyomi.extension.manga.model.MangaExtension
-import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.network.awaitSuccess
@@ -52,43 +47,6 @@ internal class ExtensionGithubApi {
             .removeSuffix("/plugins.min.json")
             .removeSuffix("/index.pb")
             .removeSuffix("/")
-    }
-
-    private fun List<ExtensionSourceJsonObject>.toAnimeExtensionSources(): List<AvailableAnimeSources> {
-        return this.map {
-            AvailableAnimeSources(
-                id = it.id,
-                lang = it.lang,
-                name = it.name,
-                baseUrl = it.baseUrl,
-            )
-        }
-    }
-
-    private fun List<ExtensionJsonObject>.toAnimeExtensions(repository: String): List<AnimeExtension.Available> {
-        val cleanRepo = cleanRepoUrl(repository)
-        return this
-            .filter {
-                val libVersion = it.extractLibVersion()
-                libVersion >= ExtensionLoader.ANIME_LIB_VERSION_MIN && libVersion <= ExtensionLoader.ANIME_LIB_VERSION_MAX
-            }
-            .map {
-                AnimeExtension.Available(
-                    name = it.name.removePrefix("Aniyomi: ").removePrefix("Tachiyomi: "),
-                    pkgName = it.pkg,
-                    versionName = it.version,
-                    versionCode = it.code,
-                    libVersion = it.extractLibVersion(),
-                    lang = it.lang,
-                    isNsfw = it.nsfw == 1,
-                    hasReadme = it.hasReadme == 1,
-                    hasChangelog = it.hasChangelog == 1,
-                    sources = it.sources?.toAnimeExtensionSources().orEmpty(),
-                    apkName = it.apk,
-                    repository = repository,
-                    iconUrl = it.iconUrl ?: "$cleanRepo/icon/${it.pkg}.png",
-                )
-            }
     }
 
     private fun ByteArray.decompressIfGzipped(): ByteArray {
@@ -276,99 +234,6 @@ internal class ExtensionGithubApi {
         return groupBy(selector).map { (_, list) -> list.maxBy(version) }
     }
 
-    suspend fun findAnimeExtensions(): List<AnimeExtension.Available> {
-        return withIOContext {
-            val repos = PrefManager.getVal<Set<String>>(PrefName.AnimeExtensionRepos).toList()
-            repos.asyncMap { repo ->
-                try {
-                    var list = fetchExtensions(repo, MediaType.ANIME)
-                    if (list.isEmpty()) {
-                        val fallback = fallbackRepoUrl(repo)
-                        if (fallback != null) list = fetchExtensions(fallback, MediaType.ANIME)
-                    }
-                    list.toAnimeExtensions(repo)
-                } catch (e: Throwable) {
-                    Logger.log("Failed to get anime extensions from $repo")
-                    Logger.log(e)
-                    emptyList()
-                }
-            }.flatten().distinctByPkg({ it.pkgName }, { it.versionCode })
-        }
-    }
-
-    fun getAnimeApkUrl(extension: AnimeExtension.Available): String {
-        return if (extension.apkName.startsWith("http")) {
-            extension.apkName
-        } else {
-            "${cleanRepoUrl(extension.repository)}/apk/${extension.apkName.removePrefix("/")}"
-        }
-    }
-
-    private fun List<ExtensionSourceJsonObject>.toMangaExtensionSources(): List<AvailableMangaSources> {
-        return this.map {
-            AvailableMangaSources(
-                id = it.id,
-                lang = it.lang,
-                name = it.name,
-                baseUrl = it.baseUrl,
-            )
-        }
-    }
-
-    private fun List<ExtensionJsonObject>.toMangaExtensions(repository: String): List<MangaExtension.Available> {
-        val cleanRepo = cleanRepoUrl(repository)
-        return this
-            .filter {
-                val libVersion = it.extractLibVersion()
-                libVersion >= ExtensionLoader.MANGA_LIB_VERSION_MIN && libVersion <= ExtensionLoader.MANGA_LIB_VERSION_MAX
-            }
-            .map {
-                MangaExtension.Available(
-                    name = it.name.removePrefix("Tachiyomi: ").removePrefix("Mihon: "),
-                    pkgName = it.pkg,
-                    versionName = it.version,
-                    versionCode = it.code,
-                    libVersion = it.extractLibVersion(),
-                    lang = it.lang,
-                    isNsfw = it.nsfw == 1,
-                    hasReadme = it.hasReadme == 1,
-                    hasChangelog = it.hasChangelog == 1,
-                    sources = it.sources?.toMangaExtensionSources().orEmpty(),
-                    apkName = it.apk,
-                    repository = repository,
-                    iconUrl = it.iconUrl ?: "$cleanRepo/icon/${it.pkg}.png",
-                )
-            }
-    }
-
-    suspend fun findMangaExtensions(): List<MangaExtension.Available> {
-        return withIOContext {
-            val repos = PrefManager.getVal<Set<String>>(PrefName.MangaExtensionRepos).toList()
-            repos.asyncMap { repo ->
-                try {
-                    var list = fetchExtensions(repo, MediaType.MANGA)
-                    if (list.isEmpty()) {
-                        val fallback = fallbackRepoUrl(repo)
-                        if (fallback != null) list = fetchExtensions(fallback, MediaType.MANGA)
-                    }
-                    list.toMangaExtensions(repo)
-                } catch (e: Throwable) {
-                    Logger.log("Failed to get manga extensions from $repo")
-                    Logger.log(e)
-                    emptyList()
-                }
-            }.flatten().distinctByPkg({ it.pkgName }, { it.versionCode })
-        }
-    }
-
-    fun getMangaApkUrl(extension: MangaExtension.Available): String {
-        return if (extension.apkName.startsWith("http")) {
-            extension.apkName
-        } else {
-            "${cleanRepoUrl(extension.repository)}/apk/${extension.apkName.removePrefix("/")}"
-        }
-    }
-
     suspend fun findNovelExtensions(): List<NovelExtension.Available> {
         return withIOContext {
             val repos = PrefManager.getVal<Set<String>>(PrefName.NovelExtensionRepos).toList()
@@ -550,14 +415,3 @@ private data class ExtensionSourceJsonObject(
     val baseUrl: String = "",
 )
 
-private fun ExtensionJsonObject.extractLibVersion(): Double {
-    extensionLib?.toDoubleOrNull()?.let { return it }
-    val parts = version.split('.')
-    if (parts.size >= 2) {
-        val major = parts[0].toDoubleOrNull() ?: return 1.0
-        // New anime ext-lib scheme uses plain majors (12, 13...) — keep them as-is
-        if (major >= 10.0) return major
-        return "${parts[0]}.${parts[1]}".toDoubleOrNull() ?: major
-    }
-    return version.toDoubleOrNull() ?: 1.0
-}

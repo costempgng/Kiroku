@@ -21,8 +21,6 @@ import ani.dantotsu.settings.saving.PrefName
 import ani.dantotsu.util.customAlertDialog
 import com.xwray.groupie.GroupieAdapter
 import com.xwray.groupie.viewbinding.BindableItem
-import eu.kanade.tachiyomi.extension.anime.AnimeExtensionManager
-import eu.kanade.tachiyomi.extension.manga.MangaExtensionManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -210,26 +208,8 @@ class AddRepositoryBottomSheet : BottomSheetDialogFragment() {
             } else input
 
             when (mediaType) {
-                MediaType.ANIME -> {
-                    val anime =
-                        PrefManager.getVal<Set<String>>(PrefName.AnimeExtensionRepos)
-                            .plus(validLink)
-                    PrefManager.setVal(PrefName.AnimeExtensionRepos, anime)
-                    CoroutineScope(Dispatchers.IO).launch {
-                        Injekt.get<AnimeExtensionManager>().findAvailableExtensions()
-                    }
-                }
-
-                MediaType.MANGA -> {
-                    val manga =
-                        PrefManager.getVal<Set<String>>(PrefName.MangaExtensionRepos)
-                            .plus(validLink)
-                    PrefManager.setVal(PrefName.MangaExtensionRepos, manga)
-                    CoroutineScope(Dispatchers.IO).launch {
-                        Injekt.get<MangaExtensionManager>().findAvailableExtensions()
-                    }
-                }
-
+                // Anime and manga repositories are owned by the extension runtime, not by Kiroku
+                // preferences; they are managed from the Extensions screen.
                 MediaType.NOVEL -> {
                     val novel =
                         PrefManager.getVal<Set<String>>(PrefName.NovelExtensionRepos)
@@ -244,26 +224,6 @@ class AddRepositoryBottomSheet : BottomSheetDialogFragment() {
 
         fun removeRepo(input: String, mediaType: MediaType) {
             when (mediaType) {
-                MediaType.ANIME -> {
-                    val anime =
-                        PrefManager.getVal<Set<String>>(PrefName.AnimeExtensionRepos)
-                            .minus(input)
-                    PrefManager.setVal(PrefName.AnimeExtensionRepos, anime)
-                    CoroutineScope(Dispatchers.IO).launch {
-                        Injekt.get<AnimeExtensionManager>().findAvailableExtensions()
-                    }
-                }
-
-                MediaType.MANGA -> {
-                    val manga =
-                        PrefManager.getVal<Set<String>>(PrefName.MangaExtensionRepos)
-                            .minus(input)
-                    PrefManager.setVal(PrefName.MangaExtensionRepos, manga)
-                    CoroutineScope(Dispatchers.IO).launch {
-                        Injekt.get<MangaExtensionManager>().findAvailableExtensions()
-                    }
-                }
-
                 MediaType.NOVEL -> {
                     val novel =
                         PrefManager.getVal<Set<String>>(PrefName.NovelExtensionRepos)
