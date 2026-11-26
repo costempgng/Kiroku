@@ -11,8 +11,6 @@ import ani.dantotsu.media.AddonType
 import ani.dantotsu.media.MediaType
 import ani.dantotsu.parsers.novel.NovelExtensionManager
 import eu.kanade.tachiyomi.extension.InstallStep
-import eu.kanade.tachiyomi.extension.anime.AnimeExtensionManager
-import eu.kanade.tachiyomi.extension.manga.MangaExtensionManager
 import eu.kanade.tachiyomi.util.system.getSerializableExtraCompat
 import eu.kanade.tachiyomi.util.system.hasMiuiPackageInstaller
 import eu.kanade.tachiyomi.util.system.toast
@@ -92,18 +90,10 @@ class ExtensionInstallActivity : AppCompatActivity() {
             else -> InstallStep.Error
         }
         if (mediaType != null) {
-            when (mediaType) {
-                MediaType.ANIME -> {
-                    Injekt.get<AnimeExtensionManager>().updateInstallStep(downloadId, newStep)
-                }
-
-                MediaType.MANGA -> {
-                    Injekt.get<MangaExtensionManager>().updateInstallStep(downloadId, newStep)
-                }
-
-                else -> {
-                    Injekt.get<NovelExtensionManager>().updateInstallStep(downloadId, newStep)
-                }
+            // Only novels are installed in-app; anime and manga extensions are installed by the
+            // extension runtime, which reports its own progress.
+            if (mediaType == MediaType.NOVEL) {
+                Injekt.get<NovelExtensionManager>().updateInstallStep(downloadId, newStep)
             }
         } else {
             when (addonType) {
