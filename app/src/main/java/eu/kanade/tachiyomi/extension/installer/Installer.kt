@@ -71,8 +71,8 @@ abstract class Installer(private val service: Service) {
     open fun processEntry(entry: Entry) {
         if (entry.type is MediaType) {
             when (entry.type) {
-                MediaType.ANIME -> animeExtensionManager.setInstalling(entry.downloadId)
-                MediaType.MANGA -> mangaExtensionManager.setInstalling(entry.downloadId)
+                MediaType.ANIME -> Unit
+                MediaType.MANGA -> Unit
                 MediaType.NOVEL -> novelExtensionManager.setInstalling(entry.downloadId)
             }
         } else {
@@ -105,15 +105,9 @@ abstract class Installer(private val service: Service) {
         if (completedEntry != null) {
             if (completedEntry.type is MediaType) {
                 when (completedEntry.type) {
-                    MediaType.ANIME -> animeExtensionManager.updateInstallStep(
-                        completedEntry.downloadId,
-                        resultStep
-                    )
+                    MediaType.ANIME -> Unit
 
-                    MediaType.MANGA -> mangaExtensionManager.updateInstallStep(
-                        completedEntry.downloadId,
-                        resultStep
-                    )
+                    MediaType.MANGA -> Unit
 
                     MediaType.NOVEL -> novelExtensionManager.updateInstallStep(
                         completedEntry.downloadId,
@@ -168,15 +162,9 @@ abstract class Installer(private val service: Service) {
 
             if (it.type is MediaType) {
                 when (it.type) {
-                    MediaType.ANIME -> animeExtensionManager.updateInstallStep(
-                        it.downloadId,
-                        InstallStep.Error
-                    )
+                    MediaType.ANIME -> Unit
 
-                    MediaType.MANGA -> mangaExtensionManager.updateInstallStep(
-                        it.downloadId,
-                        InstallStep.Error
-                    )
+                    MediaType.MANGA -> Unit
 
                     MediaType.NOVEL -> novelExtensionManager.updateInstallStep(
                         it.downloadId,
@@ -220,15 +208,9 @@ abstract class Installer(private val service: Service) {
             }
             if (toCancel.type is MediaType) {
                 when (toCancel.type) {
-                    MediaType.ANIME -> animeExtensionManager.updateInstallStep(
-                        downloadId,
-                        InstallStep.Idle
-                    )
+                    MediaType.ANIME -> Unit
 
-                    MediaType.MANGA -> mangaExtensionManager.updateInstallStep(
-                        downloadId,
-                        InstallStep.Idle
-                    )
+                    MediaType.MANGA -> Unit
 
                     MediaType.NOVEL -> novelExtensionManager.updateInstallStep(
                         downloadId,

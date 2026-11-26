@@ -1,0 +1,64 @@
+name: Test release
+
+# Builds the app and publishes the APKs as a pre-release, for testing a branch
+# without touching the real release tags. Trigger it manually from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (empty: test-build-<run number>)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build APKs
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+            export KEYSTORE_PATH="$RUNNER_TEMP/keystore.jks"
+          else
+            echo "No keystore secret found; building with debug signing."
+          fi
+          ./gradlew assembleGoogleRelease --stacktrace
+
+      - name: Publish test release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || format('test-build-{0}', github.run_number) }}
+          name: Test build ${{ github.run_number }} (${{ github.ref_name }})
+          body: |
+            Test build from `${{ github.ref_name }}` at ${{ github.sha }}.
+
+            Built by the Test release workflow; not a production release.
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: app/build/outputs/apk/google/release/*.apk

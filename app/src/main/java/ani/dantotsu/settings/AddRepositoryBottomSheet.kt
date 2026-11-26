@@ -219,6 +219,8 @@ class AddRepositoryBottomSheet : BottomSheetDialogFragment() {
                         Injekt.get<NovelExtensionManager>().findAvailableExtensions()
                     }
                 }
+
+                else -> Unit
             }
         }
 
@@ -233,6 +235,8 @@ class AddRepositoryBottomSheet : BottomSheetDialogFragment() {
                         Injekt.get<NovelExtensionManager>().findAvailableExtensions()
                     }
                 }
+
+                else -> Unit
             }
         }
 

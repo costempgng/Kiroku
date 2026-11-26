@@ -127,10 +127,10 @@ class BridgeMangaSource(
     private val runtime: KirokuRuntimeBridge get() = Injekt.get<BridgeExtensionRuntime>().bridgeClient
 
     override suspend fun getMangaDetails(manga: SManga): SManga =
-        runtime.getMangaDetails(extensionId, manga.url.mangaKey(), sourceId).manga.toSManga()
+        runtime.getMangaDetails(extensionId, manga.mangaKey(), sourceId).manga.toSManga()
 
     override suspend fun getChapterList(manga: SManga): List<SChapter> =
-        runtime.getChapters(extensionId, manga.url.mangaKey(), sourceId).map { it.toSChapter() }
+        runtime.getChapters(extensionId, manga.mangaKey(), sourceId).map { it.toSChapter() }
 
     override suspend fun getPageList(chapter: SChapter): List<Page> =
         runtime.getPages(extensionId, chapter.url, sourceId).map { it.toPage() }
