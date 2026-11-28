@@ -21,7 +21,6 @@ import io.chibi.bridge.models.Episode as BridgeEpisode
 import io.chibi.bridge.models.Media as BridgeMedia
 import io.chibi.bridge.models.Pages as BridgePages
 import io.chibi.bridge.models.Video as BridgeVideo
-import io.chibi.bridge.sdk.ChibiRuntime
 import java.security.MessageDigest
 import okhttp3.Headers
 import rx.Observable
@@ -34,7 +33,7 @@ import uy.kohesive.injekt.api.get
  * Kiroku's media pipeline (watch/read adapters, library, downloads, source settings) speaks
  * `AnimeSource`/`MangaSource`. Instead of teaching all of it about the bridge, each source the
  * runtime reports is exposed as an ordinary Kiroku source that forwards calls through
- * [ChibiRuntime]. Nothing outside this file needs to know where the data comes from.
+ * [ChibiClient]. Nothing outside this file needs to know where the data comes from.
  */
 
 /** Stable source id derived from the extension and source identity (never invented per run). */
@@ -66,7 +65,7 @@ class BridgeAnimeSource(
     override val supportsLatest: Boolean,
 ) : AnimeCatalogueSource {
 
-    private val runtime: ChibiRuntime get() = Injekt.get<BridgeExtensionRuntime>().chibi
+    private val runtime: ChibiClient get() = Injekt.get<BridgeExtensionRuntime>().chibi
 
     private val backend: String get() = backendIdOf(extensionId)
 
@@ -126,7 +125,7 @@ class BridgeMangaSource(
 
     override val baseUrl: String = baseUrl?.takeIf { it.isNotBlank() } ?: "https://extension.kiroku"
 
-    private val runtime: ChibiRuntime get() = Injekt.get<BridgeExtensionRuntime>().chibi
+    private val runtime: ChibiClient get() = Injekt.get<BridgeExtensionRuntime>().chibi
 
     private val backend: String get() = backendIdOf(extensionId)
 

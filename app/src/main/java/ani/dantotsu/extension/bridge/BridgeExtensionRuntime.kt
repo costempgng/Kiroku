@@ -22,9 +22,6 @@ import io.chibi.bridge.models.ItemType
 import io.chibi.bridge.models.Repo
 import io.chibi.bridge.models.RuntimeState
 import io.chibi.bridge.models.Source
-import io.chibi.bridge.sdk.ChibiBridgeException
-import io.chibi.bridge.sdk.ChibiRuntime
-import io.chibi.bridge.sdk.ChibiRuntimeConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,17 +54,14 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
 
     private val appContext = context.applicationContext
 
-    private val runtime = ChibiRuntime(
+    private val runtime = ChibiClient(
         appContext,
-        ChibiRuntimeConfig(
-            hostPackage = BridgeProtocol.HOST_PACKAGE,
-            connectTimeoutMs = 8_000,
-            requestTimeoutMs = 90_000,
-        ),
+        hostPackage = BridgeProtocol.HOST_PACKAGE,
+        requestTimeoutMs = 90_000,
     )
 
     /** Bridge-backed sources execute extension code through this client. */
-    internal val chibi: ChibiRuntime get() = runtime
+    internal val chibi: ChibiClient get() = runtime
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -126,8 +120,12 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
             backendCache = backends
             // The 2.0.1 host registers its backends but only attaches them on REFRESH, so every
             // source/repository call before that fails with "lateinit property app/ctx has not been
-            // initialized". Attach each backend once, here, where we know which ones exist.
-            backends.forEach { backend -> runCatching { runtime.refresh(backend.id) } }
+            // initialized". Attach the backends Kiroku can address, and only the ones the host still
+            // reports as uninitialised: refreshing an attached backend detaches it again, and one
+            // backend failing must never cost Kiroku the rest of the runtime.
+            val usable = backends.map { it.id }.toSet()
+            reported.filter { it.id in usable && !it.initialized }
+                .forEach { status -> runCatching { runtime.refresh(status.id) } }
             ExtensionRuntimeStatus(
                 state = ExtensionRuntimeState.CONNECTED,
                 runtimeVersion = host?.runtimeVersion ?: connection.host?.runtimeVersion,
@@ -138,7 +136,7 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: ChibiBridgeException) {
+        } catch (e: BridgeClientException) {
             e.toKirokuStatus()
         } catch (t: Throwable) {
             ExtensionRuntimeStatus(
@@ -485,7 +483,7 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         block()
     } catch (e: CancellationException) {
         throw e
-    } catch (e: ChibiBridgeException) {
+    } catch (e: BridgeClientException) {
         throw ExtensionRuntimeException(e.error.code, e.error.message, e.error.recoverable, e)
     } catch (e: ExtensionRuntimeException) {
         throw e
@@ -493,7 +491,7 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         throw ExtensionRuntimeException(null, t.message ?: t.javaClass.simpleName, false, t)
     }
 
-    private fun ChibiBridgeException.toKirokuStatus(): ExtensionRuntimeStatus {
+    private fun BridgeClientException.toKirokuStatus(): ExtensionRuntimeStatus {
         val hostMissing = error.code == BridgeError.CODE_HOST_NOT_INSTALLED
         return ExtensionRuntimeStatus(
             state = if (hostMissing) ExtensionRuntimeState.NOT_INSTALLED else ExtensionRuntimeState.FAILED,
