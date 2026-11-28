@@ -19,6 +19,14 @@ enum class ExtensionRuntimeType(val displayName: String) {
     /** Kiroku's in-app novel extensions; novels have no bridge runtime. */
     NOVEL("Novel");
 
+    /** Media categories this runtime can serve; the screen hides the rest. */
+    val categories: List<ExtensionCategory>
+        get() = when (this) {
+            ANIYOMI -> listOf(ExtensionCategory.ANIME, ExtensionCategory.MANGA)
+            CLOUDSTREAM -> listOf(ExtensionCategory.ANIME)
+            NOVEL -> listOf(ExtensionCategory.NOVEL)
+        }
+
     companion object {
         /** Maps the bridge's backend name; unknown backends are ignored instead of guessed. */
         fun fromWire(value: String?): ExtensionRuntimeType? {

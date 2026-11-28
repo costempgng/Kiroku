@@ -89,8 +89,44 @@ data class ExtensionsUiState(
             .distinct()
             .sorted()
 
+    /**
+     * Backends this runtime reports it can execute.
+     *
+     * Before the first connection there is nothing to go on, so the catalogue is used until the
+     * runtime answers; the last resort is both bridge backends so the screen is never empty.
+     */
+    val supportedRuntimes: List<ExtensionRuntimeType>
+        get() {
+            val reported = runtimeStatus.runtimes.filter { it != ExtensionRuntimeType.NOVEL }
+            if (reported.isNotEmpty()) return reported
+            val listed = (installed + available)
+                .map { it.runtime }
+                .filter { it != ExtensionRuntimeType.NOVEL }
+                .distinct()
+            return listed.ifEmpty {
+                listOf(ExtensionRuntimeType.ANIYOMI, ExtensionRuntimeType.CLOUDSTREAM)
+            }
+        }
+
+    /** Categories the connected backends cover, plus novels, which always run in-app. */
+    val supportedCategories: List<ExtensionCategory>
+        get() {
+            val listed = (installed + available).map { it.category }
+            return ExtensionCategory.entries.filter { category ->
+                category == ExtensionCategory.NOVEL ||
+                    category in listed ||
+                    supportedRuntimes.any { category in it.categories }
+            }
+        }
+
     val runtimeFilters: List<ExtensionRuntimeType>
-        get() = (categoryInstalled + categoryAvailable).map { it.runtime }.distinct()
+        get() = supportedRuntimes
+
+    val canInstall: Boolean get() = runtimeStatus.supportsInstall
+
+    val canUpdate: Boolean get() = runtimeStatus.supportsUpdates
+
+    val canManageRepositories: Boolean get() = runtimeStatus.supportsRepositories
 
     /** Only installed extensions can be reordered, and only when nothing reshapes the list. */
     val canReorder: Boolean
@@ -169,7 +205,19 @@ class ExtensionsViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             _state.update { it.copy(loading = true, refreshing = true) }
             loadRuntimeExtensions(forceAvailable)
-            _state.update { it.copy(loading = false, refreshing = false) }
+            // A backend can disappear (runtime updated, host removed): never stay on a tab or
+            // filter the runtime no longer serves.
+            _state.update {
+                val categories = it.supportedCategories
+                it.copy(
+                    loading = false,
+                    refreshing = false,
+                    category = it.category.takeIf { category -> category in categories }
+                        ?: categories.first(),
+                    runtimeFilter = it.runtimeFilter
+                        ?.takeIf { filter -> filter in it.supportedRuntimes },
+                )
+            }
         }
     }
 
@@ -238,6 +286,7 @@ class ExtensionsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun setRuntimeFilter(runtime: ExtensionRuntimeType?) {
+        if (runtime != null && runtime !in _state.value.supportedRuntimes) return
         _state.update { it.copy(runtimeFilter = runtime) }
     }
 

@@ -125,9 +125,11 @@ fun ExtensionsScreen(
                 onOpenRepositories = onOpenRepositories,
                 onRefresh = onRefresh,
                 onOpenTools = onOpenTools,
+                repositoriesEnabled = state.canManageRepositories,
             )
 
             CategorySelector(
+                categories = state.supportedCategories,
                 selected = state.category,
                 onSelect = onSelectCategory,
             )
@@ -144,9 +146,9 @@ fun ExtensionsScreen(
                 onLanguageClick = { languageDialog = true },
             )
 
-            if (state.runtimeFilters.isNotEmpty()) {
+            if (state.supportedRuntimes.size > 1) {
                 RuntimeFilterRow(
-                    runtimes = state.runtimeFilters,
+                    runtimes = state.supportedRuntimes,
                     selected = state.runtimeFilter,
                     onSelect = onRuntimeFilter,
                 )
@@ -196,6 +198,7 @@ fun ExtensionsScreen(
         ExtensionDetailsDialog(
             extension = extension,
             onDismiss = { detailsOf = null },
+            canUpdate = state.canUpdate,
             onUpdate = {
                 onUpdate(extension)
                 detailsOf = null
@@ -228,6 +231,8 @@ fun ExtensionsScreen(
     if (state.showRepositories) {
         RepositoriesDialog(
             repositories = state.repositories,
+            runtimes = state.supportedRuntimes,
+            canManage = state.canManageRepositories,
             onDismiss = onCloseRepositories,
             onAdd = onAddRepository,
             onRemove = onRemoveRepository,
@@ -241,6 +246,7 @@ private fun ExtensionsHeader(
     onOpenRepositories: () -> Unit,
     onRefresh: () -> Unit,
     onOpenTools: () -> Unit,
+    repositoriesEnabled: Boolean,
 ) {
     Row(
         modifier = Modifier
@@ -290,6 +296,7 @@ private fun ExtensionsHeader(
                 iconRes = R.drawable.ic_round_source_24,
                 description = "Manage repositories",
                 onClick = onOpenRepositories,
+                enabled = repositoriesEnabled,
             )
             HeaderAction(
                 iconRes = R.drawable.ic_round_refresh_24,
@@ -306,18 +313,23 @@ private fun ExtensionsHeader(
 }
 
 @Composable
-private fun HeaderAction(iconRes: Int, description: String, onClick: () -> Unit) {
+private fun HeaderAction(
+    iconRes: Int,
+    description: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
     Box(
         modifier = Modifier
             .size(44.dp)
             .clip(CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             painter = painterResource(iconRes),
             contentDescription = description,
-            tint = ExtensionPalette.pink,
+            tint = if (enabled) ExtensionPalette.pink else ExtensionPalette.muted,
             modifier = Modifier.size(21.dp),
         )
     }
@@ -325,12 +337,13 @@ private fun HeaderAction(iconRes: Int, description: String, onClick: () -> Unit)
 
 @Composable
 private fun CategorySelector(
+    categories: List<ExtensionCategory>,
     selected: ExtensionCategory,
     onSelect: (ExtensionCategory) -> Unit,
 ) {
     SegmentedRow(
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-        options = ExtensionCategory.entries,
+        options = categories,
         selected = selected,
         label = { it.displayName },
         iconRes = {
@@ -609,11 +622,20 @@ private fun RuntimeUnavailable(
         Spacer(Modifier.height(8.dp))
         Text(
             text = status.message
-                ?: "Extensions are executed by the Kiroku Extension Runtime. Install or update it, " +
-                "then allow Kiroku in its Client access screen.",
+                ?: "Extensions are executed out of process by the extension runtime host. Install or " +
+                "update it, then allow Kiroku in its Client access screen.",
             style = MaterialTheme.typography.bodyMedium,
             color = ExtensionPalette.muted,
         )
+        if (status.runtimes.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "Supported backends: " +
+                    status.runtimes.distinct().joinToString { it.displayName },
+                style = MaterialTheme.typography.labelMedium,
+                color = ExtensionPalette.pink,
+            )
+        }
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (status.needsRuntimeInstall) {
@@ -688,6 +710,9 @@ private fun ExtensionList(
                 ExtensionCard(
                     extension = extension,
                     installedTab = state.tab == ExtensionsTab.INSTALLED,
+                    canInstall = state.canInstall,
+                    canUpdate = state.canUpdate,
+                    canUninstall = state.canInstall,
                     busy = extension.id in state.busy,
                     progress = state.progress[extension.id],
                     onInstall = { onInstall(extension) },
@@ -779,6 +804,9 @@ private fun EmptyState(state: ExtensionsUiState) {
 private fun ExtensionCard(
     extension: KirokuExtension,
     installedTab: Boolean,
+    canInstall: Boolean,
+    canUpdate: Boolean,
+    canUninstall: Boolean,
     busy: Boolean,
     progress: Float?,
     onInstall: () -> Unit,
@@ -858,7 +886,7 @@ private fun ExtensionCard(
                 }
 
                 installedTab -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (extension.hasUpdate) {
+                    if (extension.hasUpdate && canUpdate) {
                         RoundAction(
                             iconRes = R.drawable.ic_round_sync_24,
                             description = "Update ${extension.name}",
@@ -868,14 +896,16 @@ private fun ExtensionCard(
                         )
                         Spacer(Modifier.width(8.dp))
                     }
-                    RoundAction(
-                        iconRes = R.drawable.ic_round_delete_24,
-                        description = "Uninstall ${extension.name}",
-                        background = ExtensionPalette.deleteButton,
-                        tint = Color(0xFF3A1A0F),
-                        onClick = onUninstall,
-                    )
-                    Spacer(Modifier.width(8.dp))
+                    if (canUninstall) {
+                        RoundAction(
+                            iconRes = R.drawable.ic_round_delete_24,
+                            description = "Uninstall ${extension.name}",
+                            background = ExtensionPalette.deleteButton,
+                            tint = Color(0xFF3A1A0F),
+                            onClick = onUninstall,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
                     RoundAction(
                         iconRes = R.drawable.ic_round_settings_24,
                         description = "Details for ${extension.name}",
@@ -885,7 +915,14 @@ private fun ExtensionCard(
                     )
                 }
 
-                else -> ActionPill(text = "Install", onClick = onInstall)
+                canInstall -> ActionPill(text = "Install", onClick = onInstall)
+
+                // The runtime only lets Kiroku read this catalogue; do not offer a dead button.
+                else -> Badge(
+                    text = "read-only",
+                    container = ExtensionPalette.chip,
+                    content = ExtensionPalette.muted,
+                )
             }
         }
 
@@ -1068,6 +1105,7 @@ private fun LanguageRow(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun ExtensionDetailsDialog(
     extension: KirokuExtension,
+    canUpdate: Boolean,
     onDismiss: () -> Unit,
     onUpdate: () -> Unit,
 ) {
@@ -1092,7 +1130,7 @@ private fun ExtensionDetailsDialog(
             }
         },
         confirmButton = {
-            if (extension.hasUpdate) {
+            if (extension.hasUpdate && canUpdate) {
                 TextButton(onClick = onUpdate) { Text("Update") }
             }
         },
@@ -1114,12 +1152,18 @@ private fun DetailLine(label: String, value: String) {
 @Composable
 private fun RepositoriesDialog(
     repositories: List<KirokuExtensionRepository>,
+    runtimes: List<ExtensionRuntimeType>,
+    canManage: Boolean,
     onDismiss: () -> Unit,
     onAdd: (String, ExtensionRuntimeType) -> Unit,
     onRemove: (String) -> Unit,
 ) {
     var url by remember { mutableStateOf("") }
-    var runtime by remember { mutableStateOf(ExtensionRuntimeType.ANIYOMI) }
+    // Only offer backends this runtime actually reports; never a choice that will fail.
+    var runtime by remember(runtimes) {
+        mutableStateOf(runtimes.firstOrNull() ?: ExtensionRuntimeType.ANIYOMI)
+    }
+    val canAdd = canManage && runtimes.isNotEmpty()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1171,13 +1215,17 @@ private fun RepositoriesDialog(
                             modifier = Modifier
                                 .size(34.dp)
                                 .clip(CircleShape)
-                                .clickable { onRemove(repository.id) },
+                                .clickable(enabled = canManage) { onRemove(repository.id) },
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
                                 painter = painterResource(R.drawable.ic_round_delete_24),
                                 contentDescription = "Remove ${repository.name}",
-                                tint = ExtensionPalette.deleteButton,
+                                tint = if (canManage) {
+                                    ExtensionPalette.deleteButton
+                                } else {
+                                    ExtensionPalette.muted
+                                },
                                 modifier = Modifier.size(17.dp),
                             )
                         }
@@ -1186,10 +1234,21 @@ private fun RepositoriesDialog(
 
                 Spacer(Modifier.height(4.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ExtensionRuntimeType.entries
-                        .filter { it != ExtensionRuntimeType.NOVEL }
-                        .forEach { option ->
+                if (!canAdd) {
+                    Text(
+                        text = if (canManage) {
+                            "This runtime does not expose any installable backend."
+                        } else {
+                            "This runtime does not manage repositories. Add them in the runtime itself."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ExtensionPalette.muted,
+                    )
+                }
+
+                if (canAdd && runtimes.size > 1) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        runtimes.forEach { option ->
                             FilterChip(
                                 text = option.displayName,
                                 selected = runtime == option,
@@ -1197,32 +1256,35 @@ private fun RepositoriesDialog(
                                 onClick = { runtime = option },
                             )
                         }
+                    }
                 }
 
-                BasicTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = ExtensionPalette.text),
-                    cursorBrush = Brush.verticalGradient(
-                        listOf(ExtensionPalette.pink, ExtensionPalette.pink),
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(ExtensionPalette.chip)
-                        .padding(horizontal = 14.dp, vertical = 14.dp),
-                    decorationBox = { inner ->
-                        if (url.isEmpty()) {
-                            Text(
-                                text = "Repository index URL",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = ExtensionPalette.muted,
-                            )
-                        }
-                        inner()
-                    },
-                )
+                if (canAdd) {
+                    BasicTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = ExtensionPalette.text),
+                        cursorBrush = Brush.verticalGradient(
+                            listOf(ExtensionPalette.pink, ExtensionPalette.pink),
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(ExtensionPalette.chip)
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                        decorationBox = { inner ->
+                            if (url.isEmpty()) {
+                                Text(
+                                    text = "Repository index URL",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = ExtensionPalette.muted,
+                                )
+                            }
+                            inner()
+                        },
+                    )
+                }
             }
         },
         confirmButton = {
@@ -1234,7 +1296,7 @@ private fun RepositoriesDialog(
                         url = ""
                     }
                 },
-                enabled = url.trim().startsWith("http"),
+                enabled = canAdd && url.trim().startsWith("http"),
             ) { Text("Add") }
         },
         dismissButton = {
