@@ -13,8 +13,10 @@ import ani.dantotsu.extension.ExtensionRuntimeType
 import ani.dantotsu.extension.ExtensionSource
 import ani.dantotsu.extension.KirokuExtension
 import ani.dantotsu.extension.KirokuExtensionRepository
+import io.chibi.bridge.models.BackendStatus
 import io.chibi.bridge.models.BridgeError
 import io.chibi.bridge.models.BridgeProtocol
+import io.chibi.bridge.models.ExecutionMechanism
 import io.chibi.bridge.models.ItemType
 import io.chibi.bridge.models.Repo
 import io.chibi.bridge.models.RuntimeState
@@ -92,6 +94,9 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
 
     private var availableCacheAt = 0L
 
+    /** Backends the runtime reported; null until it answers for the first time. */
+    private var backendCache: List<BridgeBackend>? = null
+
     init {
         // Mirror the transport state so a killed/unbound host is never shown as connected.
         scope.launch {
@@ -112,16 +117,19 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
             // initialize() loads the backends' installed extensions; without it every call fails.
             runtime.initialize()
             val host = runCatching { runtime.hostInfo() }.getOrNull()
-            val backends = connection.backends.ifEmpty {
+            val reported = connection.backends.ifEmpty {
                 runCatching { runtime.backends() }.getOrDefault(emptyList())
             }
+            val backends = reported.mapNotNull { it.toBridgeBackend() }
+                .ifEmpty { BridgeBackend.DEFAULTS }
+            backendCache = backends
             ExtensionRuntimeStatus(
                 state = ExtensionRuntimeState.CONNECTED,
                 runtimeVersion = host?.runtimeVersion ?: connection.host?.runtimeVersion,
-                runtimes = backends.mapNotNull { ExtensionRuntimeType.fromWire(it.id) },
+                runtimes = backends.map { it.runtime },
                 supportsInstall = true,
                 supportsUpdates = true,
-                supportsRepositories = true,
+                supportsRepositories = backends.any { it.runtime.supportsRepositories },
             )
         } catch (e: CancellationException) {
             throw e
@@ -235,7 +243,7 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
 
     override suspend fun reload(): List<KirokuExtension> = guard {
         ensureConnected()
-        BridgeBackend.entries.forEach { backend -> runCatching { runtime.refresh(backend.id) } }
+        backends().forEach { backend -> runCatching { runtime.refresh(backend.id) } }
         invalidateCaches()
         _changes.tryEmit(Unit)
         installedExtensions()
@@ -245,10 +253,12 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
 
     override suspend fun repositories(): List<KirokuExtensionRepository> = guard {
         ensureConnected()
-        BridgeBackend.entries.flatMap { backend ->
-            runtime.repositories(backend.id, backend.types.first())
-                .mapNotNull { repo -> repo.toKirokuRepository(backend) }
-        }.distinctBy { it.id }
+        backends()
+            .filter { it.runtime.supportsRepositories }
+            .flatMap { backend ->
+                runtime.repositories(backend.id, backend.types.first())
+                    .mapNotNull { repo -> repo.toKirokuRepository(backend) }
+            }.distinctBy { it.id }
     }
 
     override suspend fun addRepository(
@@ -257,7 +267,9 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         name: String?,
     ): KirokuExtensionRepository = guard {
         ensureConnected()
-        val backend = BridgeBackend.of(runtimeType) ?: throw ExtensionRuntimeException(
+        val backend = backends().firstOrNull {
+            it.id == runtimeType.id && it.runtime.supportsRepositories
+        } ?: throw ExtensionRuntimeException(
             code = "EXTENSION_UNSUPPORTED",
             message = "${runtimeType.displayName} repositories are not supported by the runtime.",
         )
@@ -265,7 +277,7 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         if (trimmed.isEmpty()) {
             throw ExtensionRuntimeException(code = "REPOSITORY_INVALID", message = "Enter a repository URL.")
         }
-        // Both backends keep a single URL list, so the item type of the call does not matter here.
+        // Each backend keeps a single URL list, so the item type of the call does not matter here.
         runtime.addRepository(backend.id, trimmed, backend.types.first())
         invalidateCaches()
         val added = repositories().firstOrNull { it.url == trimmed }
@@ -297,17 +309,58 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         fun extensionKey(): String = bridgeExtensionKey(backend.id, type.category(), source.name)
     }
 
-    private suspend fun installedRows(): List<SourceRow> = BridgeBackend.entries.flatMap { backend ->
+    private suspend fun installedRows(): List<SourceRow> = backends().flatMap { backend ->
         backend.types.flatMap { type ->
             runtime.installedSources(backend.id, type).map { SourceRow(backend, type, it) }
         }
     }
 
-    private suspend fun availableRows(): List<SourceRow> = BridgeBackend.entries.flatMap { backend ->
+    private suspend fun availableRows(): List<SourceRow> = backends().flatMap { backend ->
         backend.types.flatMap { type ->
             runtime.availableSources(backend.id, type).map { SourceRow(backend, type, it) }
         }
     }
+
+    /**
+     * Backends the runtime reports, mapped to what Kiroku can address.
+     *
+     * Before the runtime answers, the defaults keep the screen usable; every mutation still has to
+     * resolve a backend the runtime reported, so a default can never invent one.
+     */
+    private suspend fun backends(): List<BridgeBackend> {
+        backendCache?.let { return it }
+        val reported = runCatching { runtime.backends() }.getOrDefault(emptyList())
+        return reported.mapNotNull { it.toBridgeBackend() }
+            .ifEmpty { BridgeBackend.DEFAULTS }
+            .also { backendCache = it }
+    }
+
+    /**
+     * Only anime/manga backends are kept: Kiroku executes those through the bridge, while novels
+     * still run through its own extension manager, so a novel-only backend would only produce rows
+     * nothing can read yet.
+     */
+    private fun BackendStatus.toBridgeBackend(): BridgeBackend? {
+        val types = buildList {
+            if (capabilities.anime) add(ItemType.ANIME)
+            if (capabilities.manga) add(ItemType.MANGA)
+        }
+        if (types.isEmpty()) return null
+        return BridgeBackend(
+            id = id,
+            runtime = ExtensionRuntimeType(
+                id = id,
+                displayName = displayName,
+                categories = types.map { it.category() },
+                supportsRepositories = capabilities.repositories,
+                execution = execution.label(),
+            ),
+            types = types,
+        )
+    }
+
+    private fun ExecutionMechanism.label(): String =
+        name.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
 
     private fun List<SourceRow>.toKirokuExtension(key: String, installed: Boolean): KirokuExtension {
         val first = first()
@@ -343,15 +396,17 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
      * directly, so it must not be prefixed.
      */
     private fun SourceRow.callSourceId(): String =
-        if (backend == BridgeBackend.ANIYOMI) "${type.category().name.lowercase()}:${source.id}"
+        if (backend.id == ANIYOMI_BACKEND_ID) "${type.category().name.lowercase()}:${source.id}"
         else source.id
 
-    private fun backendOf(extensionId: String): BridgeBackend =
-        BridgeBackend.entries.firstOrNull { it.id == extensionId.substringBefore('|') }
+    private suspend fun backendOf(extensionId: String): BridgeBackend {
+        val id = extensionId.substringBefore('|')
+        return backends().firstOrNull { it.id == id }
             ?: throw ExtensionRuntimeException(
                 code = "EXTENSION_UNSUPPORTED",
                 message = "The runtime does not manage this extension.",
             )
+    }
 
     /** The Source a mutation needs: a repo entry carries the APK/JAR URL the runtime installs. */
     private suspend fun operationSource(extensionId: String): Source {
@@ -380,8 +435,9 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         )
     }
 
-    private fun splitRepositoryId(repositoryId: String): Pair<BridgeBackend, String>? {
-        val backend = BridgeBackend.entries.firstOrNull { it.id == repositoryId.substringBefore('|') }
+    private suspend fun splitRepositoryId(repositoryId: String): Pair<BridgeBackend, String>? {
+        val id = repositoryId.substringBefore('|')
+        val backend = backends().firstOrNull { it.id == id && it.runtime.supportsRepositories }
             ?: return null
         val url = repositoryId.substringAfter('|', "").trim()
         return if (url.isEmpty()) null else backend to url
@@ -443,26 +499,34 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         return part(0) * 10_000 + part(1) * 100 + part(2)
     }
 
-    private enum class BridgeBackend(
+    private data class BridgeBackend(
         val id: String,
         val runtime: ExtensionRuntimeType,
+        /** Item types this backend advertises; every bridge call takes one of them. */
         val types: List<ItemType>,
     ) {
-        ANIYOMI("aniyomi", ExtensionRuntimeType.ANIYOMI, listOf(ItemType.ANIME, ItemType.MANGA)),
-        CLOUDSTREAM("cloudstream", ExtensionRuntimeType.CLOUDSTREAM, listOf(ItemType.ANIME));
-
         companion object {
-            fun of(type: ExtensionRuntimeType): BridgeBackend? = when (type) {
-                ExtensionRuntimeType.ANIYOMI -> ANIYOMI
-                ExtensionRuntimeType.CLOUDSTREAM -> CLOUDSTREAM
-                // Novels run in Kiroku's own process; the bridge has no backend for them.
-                ExtensionRuntimeType.NOVEL -> null
-            }
+            /** Used before the runtime reports its catalogue; never for a mutation it did not report. */
+            val DEFAULTS: List<BridgeBackend> = listOf(
+                BridgeBackend(
+                    id = "aniyomi",
+                    runtime = ExtensionRuntimeType.ANIYOMI,
+                    types = listOf(ItemType.ANIME, ItemType.MANGA),
+                ),
+                BridgeBackend(
+                    id = "cloudstream",
+                    runtime = ExtensionRuntimeType.CLOUDSTREAM,
+                    types = listOf(ItemType.ANIME),
+                ),
+            )
         }
     }
 
     private companion object {
         const val AVAILABLE_CACHE_TTL_MS = 5 * 60 * 1000L
+
+        /** Aniyomi resolves sources by `anime:<id>`/`manga:<id>`; the others use the raw source id. */
+        const val ANIYOMI_BACKEND_ID = "aniyomi"
 
         /** Bridge release page; the runtime host is distributed separately from Kiroku. */
         const val RUNTIME_RELEASES_URL =

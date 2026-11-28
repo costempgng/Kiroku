@@ -146,9 +146,9 @@ fun ExtensionsScreen(
                 onLanguageClick = { languageDialog = true },
             )
 
-            if (state.supportedRuntimes.size > 1) {
+            if (state.categoryRuntimes.size > 1) {
                 RuntimeFilterRow(
-                    runtimes = state.supportedRuntimes,
+                    runtimes = state.categoryRuntimes,
                     selected = state.runtimeFilter,
                     onSelect = onRuntimeFilter,
                 )
@@ -231,7 +231,7 @@ fun ExtensionsScreen(
     if (state.showRepositories) {
         RepositoriesDialog(
             repositories = state.repositories,
-            runtimes = state.supportedRuntimes,
+            runtimes = state.supportedRuntimes.filter { it.supportsRepositories },
             canManage = state.canManageRepositories,
             onDismiss = onCloseRepositories,
             onAdd = onAddRepository,
@@ -1116,6 +1116,7 @@ private fun ExtensionDetailsDialog(
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 DetailLine("Package", extension.id)
                 DetailLine("Runtime", extension.runtime.displayName)
+                extension.runtime.execution?.let { DetailLine("Execution", it) }
                 DetailLine("Category", extension.category.displayName)
                 DetailLine("Version", "${extension.versionName} (${extension.versionCode})")
                 DetailLine("Language", extension.languageLabel)

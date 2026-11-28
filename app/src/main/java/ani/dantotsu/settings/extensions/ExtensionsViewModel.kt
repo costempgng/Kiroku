@@ -122,6 +122,10 @@ data class ExtensionsUiState(
     val runtimeFilters: List<ExtensionRuntimeType>
         get() = supportedRuntimes
 
+    /** Backends that actually serve the selected category; only they can filter its list. */
+    val categoryRuntimes: List<ExtensionRuntimeType>
+        get() = supportedRuntimes.filter { category in it.categories }
+
     val canInstall: Boolean get() = runtimeStatus.supportsInstall
 
     val canUpdate: Boolean get() = runtimeStatus.supportsUpdates

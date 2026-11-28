@@ -11,28 +11,49 @@ import android.graphics.drawable.Drawable
  * leaking the bridge's IPC shape into the screens.
  */
 
-/** Runtime ecosystems Kiroku can execute extensions through. */
-enum class ExtensionRuntimeType(val displayName: String) {
-    ANIYOMI("Aniyomi"),
-    CLOUDSTREAM("CloudStream"),
+/**
+ * One extension ecosystem, as the runtime reports it.
+ *
+ * Identity is the runtime's own backend id (`aniyomi`, `cloudstream`, `kotatsu`, `mangayomi`, …),
+ * so a backend Kiroku has never heard of still shows up with the runtime's own name and the media
+ * categories its capabilities advertise. The constants below are only assumptions used before the
+ * runtime has answered.
+ */
+data class ExtensionRuntimeType(
+    val id: String,
+    val displayName: String,
+    /** Media categories the backend advertises support for. */
+    val categories: List<ExtensionCategory>,
+    val supportsRepositories: Boolean = true,
+    /** How the backend executes extension code, as the runtime describes it. */
+    val execution: String? = null,
+) {
 
-    /** Kiroku's in-app novel extensions; novels have no bridge runtime. */
-    NOVEL("Novel");
+    /** Backends are the same backend when their ids match, whatever else the runtime reported. */
+    override fun equals(other: Any?): Boolean = other is ExtensionRuntimeType && other.id == id
 
-    /** Media categories this runtime can serve; the screen hides the rest. */
-    val categories: List<ExtensionCategory>
-        get() = when (this) {
-            ANIYOMI -> listOf(ExtensionCategory.ANIME, ExtensionCategory.MANGA)
-            CLOUDSTREAM -> listOf(ExtensionCategory.ANIME)
-            NOVEL -> listOf(ExtensionCategory.NOVEL)
-        }
+    override fun hashCode(): Int = id.hashCode()
 
     companion object {
-        /** Maps the bridge's backend name; unknown backends are ignored instead of guessed. */
-        fun fromWire(value: String?): ExtensionRuntimeType? {
-            val normalized = value?.trim()?.lowercase() ?: return null
-            return entries.firstOrNull { it.name.equals(normalized, ignoreCase = true) }
-        }
+        /** Kiroku's in-app novel extensions; novels are not executed by the bridge. */
+        val NOVEL = ExtensionRuntimeType(
+            id = "novel",
+            displayName = "Novel",
+            categories = listOf(ExtensionCategory.NOVEL),
+        )
+
+        /** Assumed for the screen only until the runtime reports its real backends. */
+        val ANIYOMI = ExtensionRuntimeType(
+            id = "aniyomi",
+            displayName = "Aniyomi",
+            categories = listOf(ExtensionCategory.ANIME, ExtensionCategory.MANGA),
+        )
+
+        val CLOUDSTREAM = ExtensionRuntimeType(
+            id = "cloudstream",
+            displayName = "CloudStream",
+            categories = listOf(ExtensionCategory.ANIME),
+        )
     }
 }
 
