@@ -3,6 +3,7 @@ package ani.dantotsu.extension.bridge
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import ani.dantotsu.extension.ExtensionCategory
 import ani.dantotsu.extension.ExtensionInstallProgress
 import ani.dantotsu.extension.ExtensionRuntime
@@ -123,6 +124,10 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
             val backends = reported.mapNotNull { it.toBridgeBackend() }
                 .ifEmpty { BridgeBackend.DEFAULTS }
             backendCache = backends
+            // The 2.0.1 host registers its backends but only attaches them on REFRESH, so every
+            // source/repository call before that fails with "lateinit property app/ctx has not been
+            // initialized". Attach each backend once, here, where we know which ones exist.
+            backends.forEach { backend -> runCatching { runtime.refresh(backend.id) } }
             ExtensionRuntimeStatus(
                 state = ExtensionRuntimeState.CONNECTED,
                 runtimeVersion = host?.runtimeVersion ?: connection.host?.runtimeVersion,
@@ -145,14 +150,28 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
         status
     }
 
-    override fun isRuntimeInstalled(): Boolean = try {
-        runtime.installedHosts().isNotEmpty()
-    } catch (_: Exception) {
-        false
-    }
+    override fun isRuntimeInstalled(): Boolean =
+        runCatching { runtime.installedHosts().isNotEmpty() }.getOrDefault(false) ||
+            runCatching {
+                appContext.packageManager.getPackageInfo(runtimePackage, 0)
+                true
+            }.getOrDefault(false)
 
+    /**
+     * Opens whatever UI the host exposes.
+     *
+     * The host is headless (its manifest declares no launcher activity), so a missing launch
+     * intent does not mean it is not installed: fall back to its system app-info page, which is
+     * the only place its version and permissions can be inspected.
+     */
     override fun launchRuntime(context: Context): Boolean {
-        val intent = context.packageManager.getLaunchIntentForPackage(runtimePackage) ?: return false
+        val intent = context.packageManager.getLaunchIntentForPackage(runtimePackage)
+            ?: if (isRuntimeInstalled()) {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.fromParts("package", runtimePackage, null))
+            } else {
+                return false
+            }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching { context.startActivity(intent) }.isSuccess
     }

@@ -15,6 +15,7 @@ import ani.dantotsu.copyToClipboard
 import ani.dantotsu.databinding.ActivitySettingsExtensionsBinding
 import ani.dantotsu.databinding.DialogUserAgentBinding
 import ani.dantotsu.databinding.ItemRepositoryBinding
+import ani.dantotsu.extension.ExtensionRuntime
 import ani.dantotsu.initActivity
 import ani.dantotsu.media.MediaType
 import ani.dantotsu.navBarHeight
@@ -102,15 +103,13 @@ class SettingsExtensionsActivity : AppCompatActivity() {
                     Settings(
                         type = 1,
                         name = "Extension runtime",
-                        desc = "Status, client access and logs of the extension runtime",
+                        desc = "Version, permissions and app info of the extension runtime host",
                         icon = R.drawable.ic_extension,
                         isActivity = true,
                         onClick = {
-                            val runtimePackage = "io.chibi.runtimehost"
-                            val launch = packageManager.getLaunchIntentForPackage(runtimePackage)
-                            if (launch != null) {
-                                ContextCompat.startActivity(context, launch, null)
-                            } else {
+                            // The host is headless, so this opens its app-info page instead of
+                            // relying on a launcher activity it does not have.
+                            if (!Injekt.get<ExtensionRuntime>().launchRuntime(context)) {
                                 snackString("The extension runtime is not installed")
                             }
                         }
