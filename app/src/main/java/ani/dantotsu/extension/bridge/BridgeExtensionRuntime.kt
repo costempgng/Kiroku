@@ -3,26 +3,25 @@ package ani.dantotsu.extension.bridge
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import ani.dantotsu.extension.ExtensionCategory
 import ani.dantotsu.extension.ExtensionInstallProgress
 import ani.dantotsu.extension.ExtensionRuntime
 import ani.dantotsu.extension.ExtensionRuntimeException
 import ani.dantotsu.extension.ExtensionRuntimeState
 import ani.dantotsu.extension.ExtensionRuntimeStatus
 import ani.dantotsu.extension.ExtensionRuntimeType
+import ani.dantotsu.extension.ExtensionSource
 import ani.dantotsu.extension.KirokuExtension
 import ani.dantotsu.extension.KirokuExtensionRepository
-import io.kiroku.runtime.bridge.BridgeConfig
-import io.kiroku.runtime.bridge.api.BridgeEvent
-import io.kiroku.runtime.bridge.client.KirokuRuntimeBridge
-import io.kiroku.runtime.bridge.errors.ExtensionBridgeException
-import io.kiroku.runtime.ipc.BackendType
-import io.kiroku.runtime.ipc.Extension
-import io.kiroku.runtime.ipc.ExtensionRepository
-import io.kiroku.runtime.ipc.RepositoryExtension
-import io.kiroku.runtime.ipc.RuntimeInfo
-import io.kiroku.runtime.ipc.RuntimeProtocol
-import io.kiroku.runtime.ipc.RuntimeState
-import io.kiroku.runtime.ipc.RuntimeStatus
+import io.chibi.bridge.models.BridgeError
+import io.chibi.bridge.models.BridgeProtocol
+import io.chibi.bridge.models.ItemType
+import io.chibi.bridge.models.Repo
+import io.chibi.bridge.models.RuntimeState
+import io.chibi.bridge.models.Source
+import io.chibi.bridge.sdk.ChibiBridgeException
+import io.chibi.bridge.sdk.ChibiRuntime
+import io.chibi.bridge.sdk.ChibiRuntimeConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,30 +37,34 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * [ExtensionRuntime] backed by the Kiroku Extension Runtime Bridge.
+ * [ExtensionRuntime] backed by ChibiExtensionRuntimeBridge.
  *
- * This is the only place that knows about the bridge's IPC models: everything above it (screens,
- * parsers, source registration) works with Kiroku's own [KirokuExtension] model.
+ * This is the only place that knows about the bridge's own models: everything above it (screens,
+ * parsers, source registration) works with Kiroku's [KirokuExtension] model.
  *
- * The runtime lives in its own APK (`io.kiroku.runtime.host`) and executes extension code out of
- * process, so a broken extension can never take Kiroku down with it.
+ * The bridge executes extension code in a separate host APK (`io.chibi.runtimehost`), so a broken
+ * extension can never take Kiroku down with it.
+ *
+ * The bridge reports *sources*, not packages: an Aniyomi extension APK ships many sources that all
+ * share the extension name, so Kiroku groups them back into one extension keyed by
+ * `backend|category|name`. Everything the runtime already knows (version, icon, update flag) is
+ * mapped straight through; nothing is invented.
  */
 class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable {
 
     private val appContext = context.applicationContext
 
-    private val bridge = KirokuRuntimeBridge(
+    private val runtime = ChibiRuntime(
         appContext,
-        BridgeConfig(
-            bindTimeoutMs = 5_000,
-            controlTimeoutMs = 20_000,
-            operationTimeoutMs = 90_000,
-            autoReconnect = true,
+        ChibiRuntimeConfig(
+            hostPackage = BridgeProtocol.HOST_PACKAGE,
+            connectTimeoutMs = 8_000,
+            requestTimeoutMs = 90_000,
         ),
     )
 
     /** Bridge-backed sources execute extension code through this client. */
-    internal val bridgeClient: KirokuRuntimeBridge get() = bridge
+    internal val chibi: ChibiRuntime get() = runtime
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -70,171 +73,72 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
     private val _status = MutableStateFlow(ExtensionRuntimeStatus())
     override val status: StateFlow<ExtensionRuntimeStatus> = _status.asStateFlow()
 
-    private val _progress = MutableSharedFlow<ExtensionInstallProgress>(extraBufferCapacity = 32)
+    // The bridge installs synchronously and reports no byte progress, so nothing is emitted here.
+    private val _progress = MutableSharedFlow<ExtensionInstallProgress>(extraBufferCapacity = 8)
     override val progress: SharedFlow<ExtensionInstallProgress> = _progress.asSharedFlow()
 
     private val _changes = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
     override val changes: SharedFlow<Unit> = _changes.asSharedFlow()
 
-    @Volatile
-    private var runtimeInfo: RuntimeInfo? = null
+    override val runtimePackage: String = BridgeProtocol.HOST_PACKAGE
 
-    @Volatile
+    /** Repo entries by extension key; install/update/uninstall need the runtime's own [Source]. */
+    private val availableSources = mutableMapOf<String, Source>()
+
+    /** Installed entries by extension key, kept for operations on extensions no repo lists. */
+    private val installedSources = mutableMapOf<String, Source>()
+
     private var availableCache: List<KirokuExtension>? = null
 
-    @Volatile
-    private var availableCacheAt: Long = 0L
-
-    override val runtimePackage: String = RuntimeProtocol.RUNTIME_PACKAGE
+    private var availableCacheAt = 0L
 
     init {
-        // The SDK reports reconnects and fatal states; mirror them so the UI stays truthful.
+        // Mirror the transport state so a killed/unbound host is never shown as connected.
         scope.launch {
-            bridge.status.collect { _status.value = it.toKirokuStatus() }
-        }
-        scope.launch {
-            bridge.events.collect { event ->
-                when (event) {
-                    is BridgeEvent.InstallProgress -> _progress.tryEmit(
-                        ExtensionInstallProgress(
-                            extensionId = event.extensionId,
-                            fraction = if (event.totalBytes <= 0L) 0f
-                            else (event.bytesDownloaded.toFloat() / event.totalBytes).coerceIn(0f, 1f),
-                            phase = event.phase,
-                        ),
-                    )
-
-                    is BridgeEvent.Installed,
-                    is BridgeEvent.Uninstalled,
-                    is BridgeEvent.ExtensionLoaded,
-                    is BridgeEvent.ExtensionFailed,
-                    -> {
-                        invalidateCaches()
-                        _changes.tryEmit(Unit)
-                    }
-
-                    else -> Unit
-                }
+            runtime.state.collect { state ->
+                val mapped = state.toKirokuState() ?: return@collect
+                if (_status.value.state != mapped) _status.value = _status.value.copy(state = mapped)
             }
         }
     }
+
+    // ------------------------------------------------------------------ lifecycle
 
     override suspend fun connect(force: Boolean): ExtensionRuntimeStatus = connectMutex.withLock {
         if (!force && _status.value.isConnected) return@withLock _status.value
-        val result = try {
-            bridge.connect()
+        _status.value = _status.value.copy(state = ExtensionRuntimeState.CONNECTING, message = null)
+        val status = try {
+            val connection = runtime.connect()
+            // initialize() loads the backends' installed extensions; without it every call fails.
+            runtime.initialize()
+            val host = runCatching { runtime.hostInfo() }.getOrNull()
+            val backends = connection.backends.ifEmpty {
+                runCatching { runtime.backends() }.getOrDefault(emptyList())
+            }
+            ExtensionRuntimeStatus(
+                state = ExtensionRuntimeState.CONNECTED,
+                runtimeVersion = host?.runtimeVersion ?: connection.host?.runtimeVersion,
+                runtimes = backends.mapNotNull { ExtensionRuntimeType.fromWire(it.id) },
+                supportsInstall = true,
+                supportsUpdates = true,
+                supportsRepositories = true,
+            )
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ChibiBridgeException) {
+            e.toKirokuStatus()
         } catch (t: Throwable) {
-            RuntimeStatus(
-                state = RuntimeState.FAILED,
+            ExtensionRuntimeStatus(
+                state = ExtensionRuntimeState.FAILED,
                 message = t.message ?: t.javaClass.simpleName,
             )
         }
-        if (result.info != null) runtimeInfo = result.info
-        result.toKirokuStatus().also { _status.value = it }
-    }
-
-    override suspend fun installedExtensions(): List<KirokuExtension> = guard {
-        ensureConnected()
-        bridge.getExtensions()
-            .mapNotNull { it.toKirokuExtension(installed = true, repositoryId = it.repositoryId) }
-            .distinctBy { it.id }
-    }
-
-    override suspend fun availableExtensions(forceRefresh: Boolean): List<KirokuExtension> = guard {
-        val cached = availableCache
-        val fresh = !forceRefresh && cached != null &&
-            System.currentTimeMillis() - availableCacheAt < AVAILABLE_CACHE_TTL_MS
-        if (fresh) return@guard cached.orEmpty()
-
-        ensureConnected()
-        val installed = bridge.getExtensions().associateBy { it.id }
-        val list = bridge.getAvailableExtensions()
-            .mapNotNull { remote ->
-                remote.toKirokuExtension(installed[remote.id])
-            }
-            .distinctBy { it.id }
-        availableCache = list
-        availableCacheAt = System.currentTimeMillis()
-        list
-    }
-
-    override suspend fun repositories(): List<KirokuExtensionRepository> = guard {
-        ensureConnected()
-        bridge.getRepositories().mapNotNull { it.toKirokuRepository() }
-    }
-
-    override suspend fun addRepository(
-        url: String,
-        runtime: ExtensionRuntimeType,
-        name: String?,
-    ): KirokuExtensionRepository = guard {
-        ensureConnected()
-        val backend = runtime.toBackend() ?: throw ExtensionRuntimeException(
-            code = "EXTENSION_UNSUPPORTED",
-            message = "${runtime.displayName} repositories are not supported by the runtime.",
-        )
-        val repository = bridge.addRepository(url, backend, name)
-        invalidateCaches()
-        repository.toKirokuRepository()
-            ?: throw ExtensionRuntimeException(
-                code = "REPOSITORY_INVALID",
-                message = "The runtime returned an unreadable repository.",
-            )
-    }
-
-    override suspend fun removeRepository(repositoryId: String): Boolean = guard {
-        ensureConnected()
-        val removed = bridge.removeRepository(repositoryId)
-        if (removed) invalidateCaches()
-        removed
-    }
-
-    override suspend fun install(extensionId: String): KirokuExtension = guard {
-        ensureConnected()
-        val extension = bridge.installExtension(extensionId)
-        invalidateCaches()
-        _changes.tryEmit(Unit)
-        extension.toKirokuExtension(installed = true, repositoryId = extension.repositoryId)
-            ?: throw ExtensionRuntimeException(
-                code = "EXTENSION_UNSUPPORTED",
-                message = "The runtime installed an extension Kiroku cannot display.",
-            )
-    }
-
-    override suspend fun update(extensionId: String): KirokuExtension = guard {
-        ensureConnected()
-        val extension = bridge.updateExtension(extensionId)
-        invalidateCaches()
-        _changes.tryEmit(Unit)
-        extension.toKirokuExtension(installed = true, repositoryId = extension.repositoryId)
-            ?: throw ExtensionRuntimeException(
-                code = "EXTENSION_UNSUPPORTED",
-                message = "The runtime updated an extension Kiroku cannot display.",
-            )
-    }
-
-    override suspend fun uninstall(extensionId: String): Boolean = guard {
-        ensureConnected()
-        val removed = bridge.uninstallExtension(extensionId)
-        invalidateCaches()
-        _changes.tryEmit(Unit)
-        removed
-    }
-
-    override suspend fun reload(): List<KirokuExtension> = guard {
-        ensureConnected()
-        invalidateCaches()
-        _changes.tryEmit(Unit)
-        bridge.reloadExtensions()
-            .mapNotNull { it.toKirokuExtension(installed = true, repositoryId = it.repositoryId) }
-            .distinctBy { it.id }
+        _status.value = status
+        status
     }
 
     override fun isRuntimeInstalled(): Boolean = try {
-        appContext.packageManager.getPackageInfo(runtimePackage, 0)
-        true
+        runtime.installedHosts().isNotEmpty()
     } catch (_: Exception) {
         false
     }
@@ -252,11 +156,243 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
     }
 
     override fun close() {
-        scope.launch { runCatching { bridge.close() } }
-        scope.launch { runCatching { bridge.disconnect() } }
+        scope.launch { runCatching { runtime.disconnect() } }
     }
 
-    /** The SDK talks to a bound runtime; connecting lazily keeps callers free of that detail. */
+    // --------------------------------------------------------------- extensions
+
+    override suspend fun installedExtensions(): List<KirokuExtension> = guard {
+        ensureConnected()
+        val rows = installedRows()
+        val groups = rows.groupBy { it.extensionKey() }
+        installedSources.clear()
+        groups.forEach { (key, group) -> installedSources[key] = group.first().source }
+        groups.map { (key, group) -> group.toKirokuExtension(key, installed = true) }
+            .distinctBy { it.id }
+    }
+
+    override suspend fun availableExtensions(forceRefresh: Boolean): List<KirokuExtension> = guard {
+        val cached = availableCache
+        if (!forceRefresh && cached != null &&
+            System.currentTimeMillis() - availableCacheAt < AVAILABLE_CACHE_TTL_MS
+        ) {
+            return@guard cached
+        }
+        ensureConnected()
+        val rows = availableRows()
+        val groups = rows.groupBy { it.extensionKey() }
+        availableSources.clear()
+        groups.forEach { (key, group) -> availableSources[key] = group.first().source }
+        groups.map { (key, group) -> group.toKirokuExtension(key, installed = false) }
+            .distinctBy { it.id }
+            .also {
+                availableCache = it
+                availableCacheAt = System.currentTimeMillis()
+            }
+    }
+
+    override suspend fun install(extensionId: String): KirokuExtension = guard {
+        ensureConnected()
+        val backend = backendOf(extensionId)
+        runtime.install(backend.id, operationSource(extensionId))
+        invalidateCaches()
+        _changes.tryEmit(Unit)
+        installedExtensions().firstOrNull { it.id == extensionId }
+            ?: throw ExtensionRuntimeException(
+                code = "EXTENSION_NOT_VISIBLE",
+                message = "The runtime installed this extension but does not list it as installed.",
+            )
+    }
+
+    override suspend fun update(extensionId: String): KirokuExtension = guard {
+        ensureConnected()
+        val backend = backendOf(extensionId)
+        runtime.update(backend.id, operationSource(extensionId))
+        invalidateCaches()
+        _changes.tryEmit(Unit)
+        installedExtensions().firstOrNull { it.id == extensionId }
+            ?: throw ExtensionRuntimeException(
+                code = "EXTENSION_NOT_VISIBLE",
+                message = "The runtime updated this extension but does not list it as installed.",
+            )
+    }
+
+    override suspend fun uninstall(extensionId: String): Boolean = guard {
+        ensureConnected()
+        val backend = backendOf(extensionId)
+        runtime.uninstall(backend.id, operationSource(extensionId))
+        invalidateCaches()
+        _changes.tryEmit(Unit)
+        // The bridge does not confirm removals, so verify instead of trusting the call.
+        if (installedRows().any { it.extensionKey() == extensionId }) {
+            throw ExtensionRuntimeException(
+                code = "UNINSTALL_FAILED",
+                message = "The runtime could not remove this extension.",
+            )
+        }
+        true
+    }
+
+    override suspend fun reload(): List<KirokuExtension> = guard {
+        ensureConnected()
+        BridgeBackend.entries.forEach { backend -> runCatching { runtime.refresh(backend.id) } }
+        invalidateCaches()
+        _changes.tryEmit(Unit)
+        installedExtensions()
+    }
+
+    // ------------------------------------------------------------- repositories
+
+    override suspend fun repositories(): List<KirokuExtensionRepository> = guard {
+        ensureConnected()
+        BridgeBackend.entries.flatMap { backend ->
+            runtime.repositories(backend.id, backend.types.first())
+                .mapNotNull { repo -> repo.toKirokuRepository(backend) }
+        }.distinctBy { it.id }
+    }
+
+    override suspend fun addRepository(
+        url: String,
+        runtimeType: ExtensionRuntimeType,
+        name: String?,
+    ): KirokuExtensionRepository = guard {
+        ensureConnected()
+        val backend = BridgeBackend.of(runtimeType) ?: throw ExtensionRuntimeException(
+            code = "EXTENSION_UNSUPPORTED",
+            message = "${runtimeType.displayName} repositories are not supported by the runtime.",
+        )
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) {
+            throw ExtensionRuntimeException(code = "REPOSITORY_INVALID", message = "Enter a repository URL.")
+        }
+        // Both backends keep a single URL list, so the item type of the call does not matter here.
+        runtime.addRepository(backend.id, trimmed, backend.types.first())
+        invalidateCaches()
+        val added = repositories().firstOrNull { it.url == trimmed }
+        added ?: throw ExtensionRuntimeException(
+            code = "REPOSITORY_INVALID",
+            message = "The runtime did not accept this repository URL.",
+        )
+    }
+
+    override suspend fun removeRepository(repositoryId: String): Boolean = guard {
+        ensureConnected()
+        val (backend, url) = splitRepositoryId(repositoryId) ?: throw ExtensionRuntimeException(
+            code = "REPOSITORY_INVALID",
+            message = "This repository is not managed by the runtime.",
+        )
+        runtime.removeRepository(backend.id, url, backend.types.first())
+        invalidateCaches()
+        repositories().none { it.url == url }
+    }
+
+    // ----------------------------------------------------------------- internals
+
+    private data class SourceRow(
+        val backend: BridgeBackend,
+        val type: ItemType,
+        val source: Source,
+    ) {
+        /** `backend|category|name`: the runtime's extension identity, rebuilt from its sources. */
+        fun extensionKey(): String = bridgeExtensionKey(backend.id, type.category(), source.name)
+    }
+
+    private suspend fun installedRows(): List<SourceRow> = BridgeBackend.entries.flatMap { backend ->
+        backend.types.flatMap { type ->
+            runtime.installedSources(backend.id, type).map { SourceRow(backend, type, it) }
+        }
+    }
+
+    private suspend fun availableRows(): List<SourceRow> = BridgeBackend.entries.flatMap { backend ->
+        backend.types.flatMap { type ->
+            runtime.availableSources(backend.id, type).map { SourceRow(backend, type, it) }
+        }
+    }
+
+    private fun List<SourceRow>.toKirokuExtension(key: String, installed: Boolean): KirokuExtension {
+        val first = first()
+        return KirokuExtension(
+            id = key,
+            name = first.source.name,
+            versionName = first.source.version,
+            versionCode = first.source.version.toVersionCode(),
+            language = map { it.source.lang }.firstOrNull { it.isNotBlank() },
+            isNsfw = any { it.source.isNsfw },
+            iconUrl = map { it.source.iconUrl }.firstOrNull { it.isNotBlank() },
+            runtime = first.backend.runtime,
+            category = first.type.category(),
+            isInstalled = installed,
+            hasUpdate = any { it.source.hasUpdate },
+            repositoryId = first.source.repo,
+            sources = map { it.toExtensionSource() }.distinctBy { it.id },
+        )
+    }
+
+    private fun SourceRow.toExtensionSource(): ExtensionSource = ExtensionSource(
+        id = callSourceId(),
+        name = source.name,
+        language = source.lang.ifBlank { null },
+        baseUrl = source.baseUrl.ifBlank { null },
+        supportsLatest = source.supportsLatest,
+    )
+
+    /**
+     * Runtime id Kiroku stores in `SAnime.url` style fields.
+     *
+     * Aniyomi resolves sources by `anime:<id>`/`manga:<id>`; CloudStream matches the plugin id
+     * directly, so it must not be prefixed.
+     */
+    private fun SourceRow.callSourceId(): String =
+        if (backend == BridgeBackend.ANIYOMI) "${type.category().name.lowercase()}:${source.id}"
+        else source.id
+
+    private fun backendOf(extensionId: String): BridgeBackend =
+        BridgeBackend.entries.firstOrNull { it.id == extensionId.substringBefore('|') }
+            ?: throw ExtensionRuntimeException(
+                code = "EXTENSION_UNSUPPORTED",
+                message = "The runtime does not manage this extension.",
+            )
+
+    /** The Source a mutation needs: a repo entry carries the APK/JAR URL the runtime installs. */
+    private suspend fun operationSource(extensionId: String): Source {
+        availableSources[extensionId]?.let { return it }
+        installedSources[extensionId]?.let { return it }
+        // Catalogues are cached; load them once before reporting an extension as unknown.
+        runCatching { availableExtensions() }
+        return availableSources[extensionId] ?: installedSources[extensionId]
+            ?: throw ExtensionRuntimeException(
+                code = "EXTENSION_UNKNOWN",
+                message = "The runtime no longer offers this extension.",
+            )
+    }
+
+    private fun Repo.toKirokuRepository(backend: BridgeBackend): KirokuExtensionRepository? {
+        val repoUrl = url.trim()
+        if (repoUrl.isEmpty()) return null
+        return KirokuExtensionRepository(
+            id = "${backend.id}|$repoUrl",
+            name = name?.takeIf { it.isNotBlank() }
+                ?: repoUrl.substringAfter("://").substringBefore('/'),
+            url = repoUrl,
+            runtime = backend.runtime,
+            enabled = true,
+            isBuiltIn = false,
+        )
+    }
+
+    private fun splitRepositoryId(repositoryId: String): Pair<BridgeBackend, String>? {
+        val backend = BridgeBackend.entries.firstOrNull { it.id == repositoryId.substringBefore('|') }
+            ?: return null
+        val url = repositoryId.substringAfter('|', "").trim()
+        return if (url.isEmpty()) null else backend to url
+    }
+
+    private fun invalidateCaches() {
+        availableCache = null
+        availableCacheAt = 0L
+        availableSources.clear()
+    }
+
     private suspend fun ensureConnected() {
         if (_status.value.isConnected) return
         val status = connect()
@@ -264,135 +400,85 @@ class BridgeExtensionRuntime(context: Context) : ExtensionRuntime, AutoCloseable
             throw ExtensionRuntimeException(
                 code = status.state.name,
                 message = status.message ?: "The extension runtime is not connected.",
-                retryable = status.state == ExtensionRuntimeState.DISCONNECTED,
+                retryable = status.state == ExtensionRuntimeState.DISCONNECTED ||
+                    status.state == ExtensionRuntimeState.FAILED,
             )
         }
-    }
-
-    private fun invalidateCaches() {
-        availableCache = null
-        availableCacheAt = 0L
     }
 
     private suspend fun <T> guard(block: suspend () -> T): T = try {
         block()
     } catch (e: CancellationException) {
         throw e
-    } catch (e: ExtensionBridgeException) {
-        throw ExtensionRuntimeException(e.code.name, e.message, e.retryable, e)
+    } catch (e: ChibiBridgeException) {
+        throw ExtensionRuntimeException(e.error.code, e.error.message, e.error.recoverable, e)
     } catch (e: ExtensionRuntimeException) {
         throw e
     } catch (t: Throwable) {
         throw ExtensionRuntimeException(null, t.message ?: t.javaClass.simpleName, false, t)
     }
 
-    private fun RuntimeStatus.toKirokuStatus(): ExtensionRuntimeStatus {
-        val info = info ?: runtimeInfo
-        val capabilities = info?.capabilities
+    private fun ChibiBridgeException.toKirokuStatus(): ExtensionRuntimeStatus {
+        val hostMissing = error.code == BridgeError.CODE_HOST_NOT_INSTALLED
         return ExtensionRuntimeStatus(
-            state = when (state) {
-                RuntimeState.IDLE -> ExtensionRuntimeState.IDLE
-                RuntimeState.NOT_INSTALLED -> ExtensionRuntimeState.NOT_INSTALLED
-                RuntimeState.INCOMPATIBLE -> ExtensionRuntimeState.INCOMPATIBLE
-                RuntimeState.CONNECTING -> ExtensionRuntimeState.CONNECTING
-                RuntimeState.CONNECTED -> ExtensionRuntimeState.CONNECTED
-                RuntimeState.DISCONNECTED -> ExtensionRuntimeState.DISCONNECTED
-                RuntimeState.FAILED -> ExtensionRuntimeState.FAILED
-            },
-            runtimeVersion = info?.runtimeVersion,
-            message = message ?: error?.message,
-            runtimes = capabilities?.backends.orEmpty().mapNotNull { ExtensionRuntimeType.fromWire(it.name) },
-            supportsInstall = capabilities?.extensionInstallation == true,
-            supportsUpdates = capabilities?.extensionUpdates == true,
-            supportsRepositories = capabilities?.repositoryManagement == true,
+            state = if (hostMissing) ExtensionRuntimeState.NOT_INSTALLED else ExtensionRuntimeState.FAILED,
+            message = error.message,
         )
     }
 
-    private fun ExtensionRepository.toKirokuRepository(): KirokuExtensionRepository? {
-        val runtime = ExtensionRuntimeType.fromWire(backend.name) ?: return null
-        return KirokuExtensionRepository(
-            id = id,
-            name = name,
-            url = url,
-            runtime = runtime,
-            enabled = enabled,
-            isBuiltIn = isBuiltIn,
-            lastRefreshedAt = lastRefreshedAt,
-            lastError = lastError?.message,
-        )
+    private fun RuntimeState.toKirokuState(): ExtensionRuntimeState? = when (this) {
+        RuntimeState.UNKNOWN -> null
+        RuntimeState.NOT_INSTALLED -> ExtensionRuntimeState.NOT_INSTALLED
+        RuntimeState.INSTALLING -> ExtensionRuntimeState.CONNECTING
+        RuntimeState.INSTALLED -> ExtensionRuntimeState.CONNECTED
+        RuntimeState.LOADING -> ExtensionRuntimeState.CONNECTING
+        RuntimeState.READY -> ExtensionRuntimeState.CONNECTED
+        RuntimeState.ERROR -> ExtensionRuntimeState.FAILED
     }
 
-    private fun RepositoryExtension.toKirokuExtension(installed: Extension?): KirokuExtension? {
-        val runtime = ExtensionRuntimeType.fromWire(backend.name) ?: return null
-        return KirokuExtension(
-            id = id,
-            name = name,
-            versionName = versionName,
-            versionCode = versionCode,
-            language = language ?: installed?.metadata?.language,
-            isNsfw = isNsfw,
-            iconUrl = iconUrl ?: installed?.metadata?.iconUrl,
-            runtime = runtime,
-            category = installed?.categoryFor()
-                ?: ani.dantotsu.extension.ExtensionCategory.fromPackageId(id, runtime),
-            isInstalled = installed != null,
-            hasUpdate = installed != null && installed.metadata.versionCode < versionCode,
-            repositoryId = repositoryId,
-            sources = installed?.sourcesFor().orEmpty(),
-            description = installed?.metadata?.description,
-            libVersion = libVersion ?: installed?.metadata?.libVersion,
-            loadError = installed?.loadError?.message,
-        )
+    private fun String.toVersionCode(): Long {
+        val parts = split('.')
+        fun part(index: Int): Long =
+            parts.getOrNull(index)?.filter { it.isDigit() }?.toLongOrNull() ?: 0L
+        return part(0) * 10_000 + part(1) * 100 + part(2)
     }
 
-    private fun Extension.toKirokuExtension(installed: Boolean, repositoryId: String?): KirokuExtension? {
-        val runtime = ExtensionRuntimeType.fromWire(backend.name) ?: return null
-        return KirokuExtension(
-            id = id,
-            name = metadata.name,
-            versionName = metadata.versionName,
-            versionCode = metadata.versionCode,
-            language = metadata.language,
-            isNsfw = metadata.isNsfw,
-            iconUrl = metadata.iconUrl,
-            runtime = runtime,
-            category = categoryFor(),
-            isInstalled = installed,
-            hasUpdate = isUpdateAvailable,
-            repositoryId = this.repositoryId ?: repositoryId,
-            sources = sourcesFor(),
-            description = metadata.description,
-            libVersion = metadata.libVersion,
-            loadError = loadError?.message,
-        )
-    }
+    private enum class BridgeBackend(
+        val id: String,
+        val runtime: ExtensionRuntimeType,
+        val types: List<ItemType>,
+    ) {
+        ANIYOMI("aniyomi", ExtensionRuntimeType.ANIYOMI, listOf(ItemType.ANIME, ItemType.MANGA)),
+        CLOUDSTREAM("cloudstream", ExtensionRuntimeType.CLOUDSTREAM, listOf(ItemType.ANIME));
 
-    private fun Extension.categoryFor() =
-        if (capabilities.manga) ani.dantotsu.extension.ExtensionCategory.MANGA
-        else ani.dantotsu.extension.ExtensionCategory.fromPackageId(id, ExtensionRuntimeType.fromWire(backend.name) ?: ExtensionRuntimeType.ANIYOMI)
-
-    private fun Extension.sourcesFor() = sources.map { source ->
-        ani.dantotsu.extension.ExtensionSource(
-            id = source.id,
-            name = source.name,
-            language = source.language,
-            baseUrl = source.baseUrl,
-            supportsLatest = source.supportsLatest,
-        )
-    }
-
-    private fun ExtensionRuntimeType.toBackend(): BackendType? = when (this) {
-        ExtensionRuntimeType.ANIYOMI -> BackendType.ANIYOMI
-        ExtensionRuntimeType.CLOUDSTREAM -> BackendType.CLOUDSTREAM
-        // Novels are executed in process by Kiroku, so the runtime has no backend for them.
-        ExtensionRuntimeType.NOVEL -> null
+        companion object {
+            fun of(type: ExtensionRuntimeType): BridgeBackend? = when (type) {
+                ExtensionRuntimeType.ANIYOMI -> ANIYOMI
+                ExtensionRuntimeType.CLOUDSTREAM -> CLOUDSTREAM
+                // Novels run in Kiroku's own process; the bridge has no backend for them.
+                ExtensionRuntimeType.NOVEL -> null
+            }
+        }
     }
 
     private companion object {
         const val AVAILABLE_CACHE_TTL_MS = 5 * 60 * 1000L
 
-        /** Bridge release page; the runtime is distributed separately from Kiroku. */
+        /** Bridge release page; the runtime host is distributed separately from Kiroku. */
         const val RUNTIME_RELEASES_URL =
-            "https://github.com/rho0908A/KirokuExtensionRuntimeBridge/releases/latest"
+            "https://github.com/saizenasato/ChibiExtensionRuntimeBridge/releases/latest"
     }
+}
+
+/** `backend|category|name`: stable Kiroku-side identity of a bridge extension. */
+internal fun bridgeExtensionKey(
+    backendId: String,
+    category: ExtensionCategory,
+    name: String,
+): String = "$backendId|${category.name}|${name.trim()}"
+
+internal fun ItemType.category(): ExtensionCategory = when (this) {
+    ItemType.ANIME -> ExtensionCategory.ANIME
+    ItemType.MANGA -> ExtensionCategory.MANGA
+    ItemType.NOVEL -> ExtensionCategory.NOVEL
 }

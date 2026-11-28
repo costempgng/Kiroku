@@ -54,7 +54,7 @@
 
     <queries>
         <!-- Extension runtime: required on Android 11+ so the bridge can find and bind it -->
-        <package android:name="io.kiroku.runtime.host" />
+        <package android:name="io.chibi.runtimehost" />
         <package android:name="idm.internet.download.manager.plus" />
         <package android:name="idm.internet.download.manager" />
         <package android:name="idm.internet.download.manager.adm.lite" />
@@ -449,15 +449,18 @@
             android:name="preloaded_fonts"
             android:resource="@array/preloaded_fonts" />
 
+        <!-- Also serves the extension runtime SDK's host-APK authority, which ships in its AAR. -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.provider"
+            android:authorities="${applicationId}.provider,${applicationId}.chibi.runtime.host.files"
             android:enabled="true"
             android:exported="false"
-            android:grantUriPermissions="true">
+            android:grantUriPermissions="true"
+            tools:replace="android:authorities">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/provider_paths" />
+                android:resource="@xml/provider_paths"
+                tools:replace="android:resource" />
         </provider>
 
         <service

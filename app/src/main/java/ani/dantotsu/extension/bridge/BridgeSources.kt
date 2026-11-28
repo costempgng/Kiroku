@@ -17,13 +17,11 @@ import eu.kanade.tachiyomi.source.model.SChapterImpl
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaImpl
 import eu.kanade.tachiyomi.source.online.HttpSource
-import io.kiroku.runtime.bridge.client.KirokuRuntimeBridge
-import io.kiroku.runtime.ipc.Anime
-import io.kiroku.runtime.ipc.Chapter
-import io.kiroku.runtime.ipc.Episode
-import io.kiroku.runtime.ipc.Manga
-import io.kiroku.runtime.ipc.MangaPage
-import io.kiroku.runtime.ipc.StreamSource
+import io.chibi.bridge.models.Episode as BridgeEpisode
+import io.chibi.bridge.models.Media as BridgeMedia
+import io.chibi.bridge.models.Pages as BridgePages
+import io.chibi.bridge.models.Video as BridgeVideo
+import io.chibi.bridge.sdk.ChibiRuntime
 import java.security.MessageDigest
 import okhttp3.Headers
 import rx.Observable
@@ -36,7 +34,7 @@ import uy.kohesive.injekt.api.get
  * Kiroku's media pipeline (watch/read adapters, library, downloads, source settings) speaks
  * `AnimeSource`/`MangaSource`. Instead of teaching all of it about the bridge, each source the
  * runtime reports is exposed as an ordinary Kiroku source that forwards calls through
- * [KirokuRuntimeBridge]. Nothing outside this file needs to know where the data comes from.
+ * [ChibiRuntime]. Nothing outside this file needs to know where the data comes from.
  */
 
 /** Stable source id derived from the extension and source identity (never invented per run). */
@@ -49,44 +47,48 @@ internal fun bridgeSourceId(extensionId: String, sourceId: String): Long {
     return value and Long.MAX_VALUE
 }
 
+/** Backend id prefix of an extension key, e.g. `aniyomi` in `aniyomi|ANIME|AnimeAV1`. */
+private fun backendIdOf(extensionId: String): String = extensionId.substringBefore('|')
+
 /**
  * An anime source executed by the runtime.
  *
- * Parameters are the extension's own ids: Kiroku stores them in `SAnime.url`/`SEpisode.url` and
- * hands them back unchanged, which is exactly what the bridge expects.
+ * [sourceId] is the runtime's own source id (`anime:<id>`/`manga:<id>` for Aniyomi, the plugin id
+ * for CloudStream). Kiroku keeps the ids the runtime hands out, so they round-trip unchanged.
  */
 class BridgeAnimeSource(
     val extensionId: String,
-    private val extensionName: String,
-    private val sourceId: String?,
+    @Suppress("UNUSED_PARAMETER") private val extensionName: String,
+    private val sourceId: String,
     override val name: String,
     override val lang: String,
     override val id: Long,
     override val supportsLatest: Boolean,
 ) : AnimeCatalogueSource {
 
-    private val runtime: KirokuRuntimeBridge get() = Injekt.get<BridgeExtensionRuntime>().bridgeClient
+    private val runtime: ChibiRuntime get() = Injekt.get<BridgeExtensionRuntime>().chibi
 
-    override suspend fun getAnimeDetails(anime: SAnime): SAnime {
-        val details = runtime.getDetails(extensionId, anime.animeKey(), sourceId)
-        return details.anime.toSAnime()
-    }
+    private val backend: String get() = backendIdOf(extensionId)
+
+    override suspend fun getAnimeDetails(anime: SAnime): SAnime =
+        runtime.detail(backend, sourceId, anime.toBridgeMedia()).toSAnime()
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> =
-        runtime.getEpisodes(extensionId, anime.animeKey(), sourceId).map { it.toSEpisode() }
+        runtime.detail(backend, sourceId, anime.toBridgeMedia()).episodes.map { it.toSEpisode() }
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> =
-        runtime.extractStreams(extensionId, episode.url, sourceId).map { it.toVideo() }
+        runtime.videoList(backend, sourceId, episode.toBridgeEpisode()).map { it.toKirokuVideo() }
 
     override suspend fun getPopularAnime(page: Int): AnimesPage =
-        runtime.popular(extensionId, sourceId, page).toAnimesPage()
+        runtime.popular(backend, sourceId, page).toAnimesPage()
 
     override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage =
-        runtime.search(extensionId, query, sourceId, page).toAnimesPage()
+        runtime.search(backend, sourceId, query, page).toAnimesPage()
 
     override suspend fun getLatestUpdates(page: Int): AnimesPage =
-        runtime.latest(extensionId, sourceId, page).toAnimesPage()
+        runtime.latest(backend, sourceId, page).toAnimesPage()
 
+    // The bridge does not expose source filters through Kiroku's filter model yet.
     override fun getFilterList(): AnimeFilterList = AnimeFilterList()
 
     // The runtime paginates on its own; these deprecated variants only exist for the API contract.
@@ -113,8 +115,8 @@ class BridgeAnimeSource(
  */
 class BridgeMangaSource(
     val extensionId: String,
-    private val extensionName: String,
-    private val sourceId: String?,
+    @Suppress("UNUSED_PARAMETER") private val extensionName: String,
+    private val sourceId: String,
     override val name: String,
     override val lang: String,
     override val id: Long,
@@ -124,25 +126,29 @@ class BridgeMangaSource(
 
     override val baseUrl: String = baseUrl?.takeIf { it.isNotBlank() } ?: "https://extension.kiroku"
 
-    private val runtime: KirokuRuntimeBridge get() = Injekt.get<BridgeExtensionRuntime>().bridgeClient
+    private val runtime: ChibiRuntime get() = Injekt.get<BridgeExtensionRuntime>().chibi
+
+    private val backend: String get() = backendIdOf(extensionId)
 
     override suspend fun getMangaDetails(manga: SManga): SManga =
-        runtime.getMangaDetails(extensionId, manga.mangaKey(), sourceId).manga.toSManga()
+        runtime.detail(backend, sourceId, manga.toBridgeMedia()).toSManga()
 
     override suspend fun getChapterList(manga: SManga): List<SChapter> =
-        runtime.getChapters(extensionId, manga.mangaKey(), sourceId).map { it.toSChapter() }
+        runtime.detail(backend, sourceId, manga.toBridgeMedia()).episodes.map { it.toSChapter() }
 
     override suspend fun getPageList(chapter: SChapter): List<Page> =
-        runtime.getPages(extensionId, chapter.url, sourceId).map { it.toPage() }
+        runtime.pageList(backend, sourceId, chapter.toBridgeEpisode()).mapIndexed { index, page ->
+            Page(index = index, url = page.url, imageUrl = page.url)
+        }
 
     override suspend fun getPopularManga(page: Int): MangasPage =
-        runtime.popularManga(extensionId, sourceId, page).toMangasPage()
+        runtime.popular(backend, sourceId, page).toMangasPage()
 
     override suspend fun getSearchManga(page: Int, query: String, filters: FilterList): MangasPage =
-        runtime.searchManga(extensionId, query, sourceId, page).toMangasPage()
+        runtime.search(backend, sourceId, query, page).toMangasPage()
 
     override suspend fun getLatestUpdates(page: Int): MangasPage =
-        runtime.latestManga(extensionId, sourceId, page).toMangasPage()
+        runtime.latest(backend, sourceId, page).toMangasPage()
 
     override fun getFilterList(): FilterList = FilterList()
 
@@ -150,76 +156,87 @@ class BridgeMangaSource(
 }
 
 // -------------------------------------------------------------------------------------------------
-// Model conversion: runtime models -> the models Kiroku's pipeline consumes
+// Model conversion: the runtime's models <-> the models Kiroku's pipeline consumes
 // -------------------------------------------------------------------------------------------------
 
-/** The runtime accepts either the extension's url or its id; Kiroku keeps the url. */
-internal fun SAnime.animeKey(): String = url.ifBlank { title }
+/** The runtime addresses media by its url; Kiroku keeps that url in `url`/`title`. */
+internal fun SAnime.toBridgeMedia(): BridgeMedia =
+    BridgeMedia(url = url.ifBlank { title }, title = title)
 
-internal fun SManga.mangaKey(): String = url.ifBlank { title }
+internal fun SManga.toBridgeMedia(): BridgeMedia =
+    BridgeMedia(url = url.ifBlank { title }, title = title)
 
-internal fun Anime.toSAnime(): SAnime = SAnimeImpl().also { sAnime ->
-    sAnime.url = url ?: id
-    sAnime.title = title
-    sAnime.thumbnail_url = coverUrl
+internal fun SEpisode.toBridgeEpisode(): BridgeEpisode = BridgeEpisode(
+    url = url,
+    name = name,
+    dateUpload = date_upload.takeIf { it > 0L }?.toString().orEmpty(),
+    scanlator = scanlator,
+    episodeNumber = episode_number.takeIf { it >= 0f }?.toString().orEmpty(),
+)
+
+internal fun SChapter.toBridgeEpisode(): BridgeEpisode = BridgeEpisode(
+    url = url,
+    name = name,
+    dateUpload = date_upload.takeIf { it > 0L }?.toString().orEmpty(),
+    scanlator = scanlator,
+    episodeNumber = chapter_number.takeIf { it >= 0f }?.toString().orEmpty(),
+)
+
+internal fun BridgeMedia.toSAnime(): SAnime = SAnimeImpl().also { sAnime ->
+    sAnime.url = url ?: title.orEmpty()
+    sAnime.title = title.orEmpty()
+    sAnime.thumbnail_url = cover
     sAnime.description = description
     sAnime.author = author
     sAnime.artist = artist
-    sAnime.genre = genres.joinToString(", ").ifBlank { null }
+    sAnime.genre = genre.joinToString(", ").ifBlank { null }
     sAnime.initialized = true
 }
 
-internal fun Episode.toSEpisode(): SEpisode = SEpisodeImpl().also { sEpisode ->
-    sEpisode.url = url ?: id
-    sEpisode.name = name
-    sEpisode.date_upload = dateUpload ?: 0L
-    sEpisode.episode_number = episodeNumber?.toFloat() ?: -1f
+internal fun BridgeEpisode.toSEpisode(): SEpisode = SEpisodeImpl().also { sEpisode ->
+    sEpisode.url = url.orEmpty()
+    sEpisode.name = name.orEmpty()
+    sEpisode.date_upload = dateUpload.toLongOrNull() ?: 0L
+    sEpisode.episode_number = episodeNumber.toFloatOrNull() ?: -1f
     sEpisode.scanlator = scanlator
 }
 
-// The runtime answers one page per call and does not expose the source's page cursor.
-internal fun List<Anime>.toAnimesPage(): AnimesPage =
-    AnimesPage(animes = map { it.toSAnime() }, hasNextPage = false)
+internal fun BridgePages.toAnimesPage(): AnimesPage =
+    AnimesPage(animes = list.map { it.toSAnime() }, hasNextPage = hasNextPage)
 
-internal fun StreamSource.toVideo(): Video {
-    val mergedHeaders = Headers.Builder().apply {
-        headers.forEach { (key, value) -> add(key, value) }
-        referer?.takeIf { it.isNotBlank() }?.let { add("Referer", it) }
-        userAgent?.takeIf { it.isNotBlank() }?.let { add("User-Agent", it) }
-    }.build()
+internal fun BridgeVideo.toKirokuVideo(): Video = Video(
+    url = url,
+    quality = quality.ifBlank { title ?: "Default" },
+    videoUrl = url,
+    headers = headers?.takeIf { it.isNotEmpty() }?.let { map ->
+        Headers.Builder().apply { map.forEach { (key, value) -> add(key, value) } }.build()
+    },
+    subtitleTracks = subtitles.mapNotNull { track ->
+        track.file?.let { Track(it, track.label ?: "Subtitle") }
+    },
+    audioTracks = audios.mapNotNull { track ->
+        track.file?.let { Track(it, track.label ?: "Audio") }
+    },
+)
 
-    return Video(
-        url = url,
-        quality = quality ?: server ?: title ?: "Default",
-        videoUrl = url,
-        headers = mergedHeaders,
-        subtitleTracks = subtitles.map { Track(it.url, it.label ?: it.language ?: "Subtitle") },
-        audioTracks = audioTracks.mapNotNull { track ->
-            track.url?.let { Track(it, track.label ?: track.language ?: "Audio") }
-        },
-    )
-}
-
-internal fun Manga.toSManga(): SManga = SMangaImpl().also { sManga ->
-    sManga.url = url ?: id
-    sManga.title = title
-    sManga.thumbnail_url = coverUrl
+internal fun BridgeMedia.toSManga(): SManga = SMangaImpl().also { sManga ->
+    sManga.url = url ?: title.orEmpty()
+    sManga.title = title.orEmpty()
+    sManga.thumbnail_url = cover
     sManga.description = description
     sManga.author = author
     sManga.artist = artist
-    sManga.genre = genres.joinToString(", ").ifBlank { null }
+    sManga.genre = genre.joinToString(", ").ifBlank { null }
     sManga.initialized = true
 }
 
-internal fun Chapter.toSChapter(): SChapter = SChapterImpl().also { sChapter ->
-    sChapter.url = url ?: id
-    sChapter.name = name
-    sChapter.date_upload = dateUpload ?: 0L
-    sChapter.chapter_number = chapterNumber?.toFloat() ?: -1f
+internal fun BridgeEpisode.toSChapter(): SChapter = SChapterImpl().also { sChapter ->
+    sChapter.url = url.orEmpty()
+    sChapter.name = name.orEmpty()
+    sChapter.date_upload = dateUpload.toLongOrNull() ?: 0L
+    sChapter.chapter_number = episodeNumber.toFloatOrNull() ?: -1f
     sChapter.scanlator = scanlator
 }
 
-internal fun MangaPage.toPage(): Page = Page(index = index, url = url, imageUrl = imageUrl ?: url)
-
-internal fun List<Manga>.toMangasPage(): MangasPage =
-    MangasPage(mangas = map { it.toSManga() }, hasNextPage = false)
+internal fun BridgePages.toMangasPage(): MangasPage =
+    MangasPage(mangas = list.map { it.toSManga() }, hasNextPage = hasNextPage)

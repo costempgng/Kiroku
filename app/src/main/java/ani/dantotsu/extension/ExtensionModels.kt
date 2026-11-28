@@ -5,7 +5,7 @@ import android.graphics.drawable.Drawable
 /**
  * Kiroku's own extension model.
  *
- * Extensions are executed by an out-of-process runtime (the Kiroku Extension Runtime Bridge); this
+ * Extensions are executed by an out-of-process runtime (the ChibiExtensionRuntimeBridge); this
  * file only describes what Kiroku itself needs to render and manage them. Keeping the model flat
  * mirrors the rest of Kiroku's extension code (`AnimeExtension`, `MangaExtension`) instead of
  * leaking the bridge's IPC shape into the screens.

@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
  * The single contract between Kiroku and whatever executes extensions.
  *
  * Kiroku never loads extension code in its own process: an implementation of this interface talks
- * to a runtime (today the Kiroku Extension Runtime Bridge) and converts its answers into Kiroku's
+ * to a runtime (today the ChibiExtensionRuntimeBridge) and converts its answers into Kiroku's
  * own [KirokuExtension] model. Adding another runtime later means adding an implementation, not
  * touching the screens or the parsers.
  */

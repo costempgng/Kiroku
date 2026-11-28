@@ -102,11 +102,11 @@ class SettingsExtensionsActivity : AppCompatActivity() {
                     Settings(
                         type = 1,
                         name = "Extension runtime",
-                        desc = "Status, client access and logs of the Kiroku Extension Runtime",
+                        desc = "Status, client access and logs of the extension runtime",
                         icon = R.drawable.ic_extension,
                         isActivity = true,
                         onClick = {
-                            val runtimePackage = "io.kiroku.runtime.host"
+                            val runtimePackage = "io.chibi.runtimehost"
                             val launch = packageManager.getLaunchIntentForPackage(runtimePackage)
                             if (launch != null) {
                                 ContextCompat.startActivity(context, launch, null)

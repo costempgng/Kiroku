@@ -26,7 +26,7 @@ import uy.kohesive.injekt.api.get
  * Kiroku's anime extension manager.
  *
  * Extensions are no longer loaded or installed from inside Kiroku: the [ExtensionRuntime] (the
- * Kiroku Extension Runtime Bridge) owns discovery, installation and execution. This manager keeps
+ * ChibiExtensionRuntimeBridge) owns discovery, installation and execution. This manager keeps
  * Kiroku's own extension model in sync with the runtime so the rest of the app (source
  * registration, parsers, watch screen) keeps working unchanged.
  */
